@@ -27,10 +27,21 @@ This is a Flask expense tracker application using Jinja2 templates and SQLite. I
 
 **Frontend**: Custom CSS design system in [static/css/style.css](static/css/style.css) uses CSS variables with a green (`#1a472a`) and orange (`#c17f24`) palette, DM Serif Display / DM Sans fonts. [static/js/main.js](static/js/main.js) is currently empty.
 
-**Currency**: The app is designed for Indian Rupee (₹) throughout.
+**Currency**: The app is designed for US Dollar ($) throughout.
+
+**Timezone**: The app targets Pacific Time (`America/Los_Angeles`).
 
 ## Development Notes
 
 - Flask runs with `debug=True` on port 5001.
 - No authentication is implemented yet — login/register forms exist but have no backend handling.
 - `database/db.py` functions (`get_db`, `init_db`, `seed_db`) are placeholder stubs.
+
+## graphify
+
+This project has a graphify knowledge graph at graphify-out/.
+
+Rules:
+- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
+- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
+- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)

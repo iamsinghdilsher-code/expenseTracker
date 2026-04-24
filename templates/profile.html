@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}Profile — Spendly{% endblock %}
+
+{% block content %}
+<section class="add-section">
+    <div class="add-inner">
+
+        <div class="add-header">
+            <h1 class="add-title">Profile</h1>
+            <p class="add-subtitle"><a href="{{ url_for('expenses') }}" class="back-link">&#8592; Back to dashboard</a></p>
+        </div>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}
+                <div class="flash flash-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endwith %}
+
+        <!-- Stats -->
+        <div class="profile-stats">
+            <div class="stat-card">
+                <div class="stat-value">{{ all_time['count'] }}</div>
+                <div class="stat-label">Total expenses</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">${{ "%.2f"|format(all_time['total']) }}</div>
+                <div class="stat-label">Total spent</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{ top_cat['category'] if top_cat else '—' }}</div>
+                <div class="stat-label">Top category</div>
+            </div>
+        </div>
+
+        <!-- Update profile -->
+        <div class="method-panel" style="margin-bottom:1.5rem">
+            <h2 class="profile-section-title">Account details</h2>
+
+            {% if error %}
+            <div class="flash flash-error">{{ error }}</div>
+            {% endif %}
+
+            <form method="POST" action="{{ url_for('profile') }}" class="expense-form">
+                <div class="form-group">
+                    <label>Email</label>
+                    <input class="form-input" type="email" value="{{ current_user['email'] }}" disabled>
+                </div>
+                <div class="form-group">
+                    <label for="name">Display name</label>
+                    <input id="name" class="form-input" type="text" name="name"
+                           value="{{ current_user['name'] }}" placeholder="Your name">
+                </div>
+                <button type="submit" class="btn-submit">Update name</button>
+            </form>
+        </div>
+
+        <!-- Change password -->
+        <div class="method-panel">
+            <h2 class="profile-section-title">Change password</h2>
+            <form method="POST" action="{{ url_for('profile') }}" class="expense-form">
+                <div class="form-group">
+                    <label for="current_password">Current password</label>
+                    <input id="current_password" class="form-input" type="password" name="current_password" required>
+                </div>
+                <div class="form-group">
+                    <label for="new_password">New password</label>
+                    <input id="new_password" class="form-input" type="password" name="new_password"
+                           placeholder="Min. 8 characters" required>
+                </div>
+                <button type="submit" class="btn-submit">Change password</button>
+            </form>
+        </div>
+
+    </div>
+</section>
+{% endblock %}

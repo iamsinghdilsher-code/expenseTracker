@@ -19,8 +19,15 @@
                 <span class="brand-name">Spendly</span>
             </a>
             <div class="nav-links">
-                <a href="{{ url_for('login') }}">Sign in</a>
-                <a href="{{ url_for('register') }}" class="nav-cta">Get started</a>
+                {% if current_user %}
+                    <a href="{{ url_for('expenses') }}">Dashboard</a>
+                    <a href="{{ url_for('add_expense') }}">Add Expense</a>
+                    <a href="{{ url_for('profile') }}">{{ current_user['name'] or 'Profile' }}</a>
+                    <a href="{{ url_for('logout') }}" class="nav-cta">Sign out</a>
+                {% else %}
+                    <a href="{{ url_for('login') }}">Sign in</a>
+                    <a href="{{ url_for('register') }}" class="nav-cta">Get started</a>
+                {% endif %}
             </div>
         </div>
     </nav>
@@ -33,7 +40,7 @@
         <div class="footer-inner">
             <span class="brand-icon">◈</span>
             <span class="footer-name">Spendly</span>
-            <p class="footer-copy">Track every rupee. Own your finances.</p>
+            <p class="footer-copy">Track every dollar. Own your finances.</p>
             <div class="footer-links">
                 <a href="/terms">Terms and Conditions</a>
                 <a href="/privacy">Privacy Policy</a>
