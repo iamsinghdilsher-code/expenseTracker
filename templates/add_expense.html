@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import category_select %}
 
 {% block title %}Add Expense — Spendly{% endblock %}
 
@@ -48,11 +49,7 @@
                     </div>
                     <div class="form-group">
                         <label for="m-category">Category</label>
-                        <select id="m-category" class="form-input form-select" name="category">
-                            {% for cat in categories %}
-                            <option value="{{ cat }}">{{ cat }}</option>
-                            {% endfor %}
-                        </select>
+                        {{ category_select('m-category', 'category', category_tree) }}
                     </div>
                 </div>
                 <div class="form-row">
@@ -95,11 +92,7 @@
                     </div>
                     <div class="form-group">
                         <label for="p-category">Category</label>
-                        <select id="p-category" class="form-input form-select" name="category">
-                            {% for cat in categories %}
-                            <option value="{{ cat }}">{{ cat }}</option>
-                            {% endfor %}
-                        </select>
+                        {{ category_select('p-category', 'category', category_tree) }}
                     </div>
                 </div>
                 <div class="form-row">
@@ -174,7 +167,8 @@
 
 {% block scripts %}
 <script>
-const CATEGORIES = {{ categories | tojson }};
+const CATEGORY_TREE = {{ category_tree | tojson }};
+const CATEGORIES = CATEGORY_TREE.flatMap(p => [p.name, ...p.children.map(c => c.name)]);
 
 // ── Method tabs ──────────────────────────────────────────────────
 document.querySelectorAll('.method-card').forEach(card => {

@@ -48,21 +48,61 @@ def login_required(f):
     return decorated
 
 
+def umbrella_required(f):
+    """Requires both a valid session and an active umbrella context."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if "user_id" not in session:
+            flash("Please sign in to continue.", "error")
+            return redirect(url_for("login"))
+        if not g.active_umbrella_id:
+            flash("Please sign in to continue.", "error")
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated
+
+
 @app.before_request
 def load_user():
     g.user = None
+    g.active_umbrella_id = None
+    g.active_umbrella = None
+    g.umbrellas = []
     if "user_id" in session:
         from database.db import get_db
         conn = get_db()
         g.user = conn.execute(
-            "SELECT id, name, email FROM users WHERE id = ?", (session["user_id"],)
+            "SELECT id, name, email, role FROM users WHERE id = ?", (session["user_id"],)
         ).fetchone()
+        if "active_umbrella_id" not in session:
+            row = conn.execute(
+                "SELECT umbrella_id FROM umbrella_access WHERE user_id = ? LIMIT 1",
+                (session["user_id"],),
+            ).fetchone()
+            if row:
+                session["active_umbrella_id"] = row["umbrella_id"]
+        g.active_umbrella_id = session.get("active_umbrella_id")
+        g.umbrellas = conn.execute(
+            "SELECT u.id, u.name FROM umbrellas u"
+            " JOIN umbrella_access ua ON ua.umbrella_id = u.id"
+            " WHERE ua.user_id = ? ORDER BY u.name",
+            (session["user_id"],),
+        ).fetchall()
+        if g.active_umbrella_id:
+            g.active_umbrella = conn.execute(
+                "SELECT id, name FROM umbrellas WHERE id = ?", (g.active_umbrella_id,)
+            ).fetchone()
         conn.close()
 
 
 @app.context_processor
 def inject_user():
-    return {"current_user": g.user}
+    return {
+        "current_user": g.user,
+        "active_umbrella_id": g.active_umbrella_id,
+        "active_umbrella": g.active_umbrella,
+        "user_umbrellas": g.umbrellas,
+    }
 
 
 # ------------------------------------------------------------------ #
@@ -107,7 +147,6 @@ def _parse_receipt_text(text):
     if merchant_match:
         result["description"] = merchant_match.group(1).strip()[:80]
     else:
-        # Skip header/junk lines (copyright symbols, "CUSTOM ALERT", etc.)
         _junk = re.compile(r'(custom\s*alert|\balert\b|©|copyright)', re.IGNORECASE)
         lines = [l.strip() for l in text.split("\n") if l.strip() and not _junk.search(l)]
         if lines:
@@ -167,13 +206,32 @@ def _parse_text_statement(text):
     return expenses[:50]
 
 
-def _save_expense(user_id, amount, category, description, date, source):
+def _build_category_tree(umbrella_id):
+    from database.db import get_db, get_category_tree
+    conn = get_db()
+    tree = get_category_tree(conn, umbrella_id)
+    conn.close()
+    return tree
+
+
+def _save_expense(user_id, amount, category, description, date, source, umbrella_id=None):
     from database.db import get_db
     conn = get_db()
+    category_id = None
+    if umbrella_id:
+        row = conn.execute(
+            "SELECT id FROM categories WHERE name = ? AND umbrella_id = ?",
+            (category, umbrella_id),
+        ).fetchone()
+        if row:
+            category_id = row["id"]
     conn.execute(
-        "INSERT INTO expenses (user_id, amount, category, description, date, source, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (user_id, amount, category, description, date, source, datetime.now(PACIFIC).isoformat()),
+        "INSERT INTO expenses"
+        " (user_id, umbrella_id, category_id, amount, category, description,"
+        "  date, source, status, confidence_score, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', 1.0, ?)",
+        (user_id, umbrella_id, category_id, amount, category, description,
+         date, source, datetime.now(PACIFIC).isoformat()),
     )
     conn.commit()
     conn.close()
@@ -229,6 +287,14 @@ def register():
         conn.close()
         session["user_id"] = user["id"]
         seed_db(user["id"])
+        # Activate the Home umbrella created by seed_db
+        conn2 = get_db()
+        umb = conn2.execute(
+            "SELECT id FROM umbrellas WHERE owner_id = ? LIMIT 1", (user["id"],)
+        ).fetchone()
+        conn2.close()
+        if umb:
+            session["active_umbrella_id"] = umb["id"]
         flash(f"Welcome to Spendly, {name}!", "success")
         return redirect(url_for("expenses"))
     return render_template("register.html")
@@ -245,10 +311,17 @@ def login():
         init_db()
         conn = get_db()
         user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
-        conn.close()
         if not user or not check_password_hash(user["password_hash"], password):
+            conn.close()
             return render_template("login.html", error="Incorrect email or password.")
+        umb = conn.execute(
+            "SELECT umbrella_id FROM umbrella_access WHERE user_id = ? LIMIT 1",
+            (user["id"],),
+        ).fetchone()
+        conn.close()
         session["user_id"] = user["id"]
+        if umb:
+            session["active_umbrella_id"] = umb["umbrella_id"]
         return redirect(url_for("expenses"))
     return render_template("login.html")
 
@@ -257,6 +330,23 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("landing"))
+
+
+@app.route("/switch-umbrella/<int:umbrella_id>")
+@login_required
+def switch_umbrella(umbrella_id):
+    from database.db import get_db
+    conn = get_db()
+    access = conn.execute(
+        "SELECT id FROM umbrella_access WHERE user_id = ? AND umbrella_id = ?",
+        (session["user_id"], umbrella_id),
+    ).fetchone()
+    conn.close()
+    if access:
+        session["active_umbrella_id"] = umbrella_id
+    else:
+        flash("You don't have access to that umbrella.", "error")
+    return redirect(request.referrer or url_for("expenses"))
 
 
 # ------------------------------------------------------------------ #
@@ -316,7 +406,7 @@ def profile():
 # ------------------------------------------------------------------ #
 
 @app.route("/expenses")
-@login_required
+@umbrella_required
 def expenses():
     from database.db import get_db
     now = datetime.now(PACIFIC)
@@ -330,9 +420,15 @@ def expenses():
     cat_filter = request.args.get("category", "").strip()
 
     conn = get_db()
+    is_power = g.user["role"] == "power"
 
-    query = "SELECT * FROM expenses WHERE user_id = ? AND strftime('%Y-%m', date) = ?"
-    params = [session["user_id"], month]
+    if is_power:
+        query = "SELECT * FROM expenses WHERE strftime('%Y-%m', date) = ?"
+        params = [month]
+    else:
+        query = "SELECT * FROM expenses WHERE user_id = ? AND umbrella_id = ? AND strftime('%Y-%m', date) = ?"
+        params = [session["user_id"], g.active_umbrella_id, month]
+
     if search:
         query += " AND description LIKE ?"
         params.append(f"%{search}%")
@@ -342,23 +438,33 @@ def expenses():
     query += " ORDER BY date DESC"
     rows = conn.execute(query, params).fetchall()
 
-    # Category totals for chart (unfiltered — always show full month breakdown)
-    cat_rows = conn.execute(
-        "SELECT category, SUM(amount) as total FROM expenses"
-        " WHERE user_id = ? AND strftime('%Y-%m', date) = ? GROUP BY category",
-        (session["user_id"], month),
-    ).fetchall()
+    # Category totals for the pie chart (always full month, no search/cat filter)
+    if is_power:
+        cat_rows = conn.execute(
+            "SELECT category, SUM(amount) as total FROM expenses"
+            " WHERE strftime('%Y-%m', date) = ? GROUP BY category",
+            (month,),
+        ).fetchall()
+    else:
+        cat_rows = conn.execute(
+            "SELECT category, SUM(amount) as total FROM expenses"
+            " WHERE user_id = ? AND umbrella_id = ? AND strftime('%Y-%m', date) = ?"
+            " GROUP BY category",
+            (session["user_id"], g.active_umbrella_id, month),
+        ).fetchall()
+
     conn.close()
 
     total = sum(r["amount"] for r in rows)
     chart_labels = [r["category"] for r in cat_rows]
     chart_values = [round(r["total"], 2) for r in cat_rows]
 
-    # Previous / next month for navigation
     y, m = int(month[:4]), int(month[5:])
     prev_m = f"{y-1}-12" if m == 1 else f"{y}-{m-1:02d}"
     next_m = f"{y+1}-01" if m == 12 else f"{y}-{m+1:02d}"
     month_label = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
+
+    category_tree = _build_category_tree(g.active_umbrella_id) if g.active_umbrella_id else []
 
     return render_template(
         "expenses.html",
@@ -372,7 +478,7 @@ def expenses():
         chart_values=chart_values,
         search=search,
         cat_filter=cat_filter,
-        categories=CATEGORIES,
+        category_tree=category_tree,
     )
 
 
@@ -381,7 +487,7 @@ def expenses():
 # ------------------------------------------------------------------ #
 
 @app.route("/expenses/add", methods=["GET", "POST"])
-@login_required
+@umbrella_required
 def add_expense():
     if request.method == "POST":
         raw_amount = request.form.get("amount", "").strip()
@@ -397,13 +503,15 @@ def add_expense():
         if not date:
             date = datetime.now(PACIFIC).strftime("%Y-%m-%d")
         try:
-            _save_expense(session["user_id"], amount, category, description, date, source)
+            _save_expense(session["user_id"], amount, category, description, date, source,
+                          umbrella_id=g.active_umbrella_id)
             flash(f"${amount:.2f} expense added.", "success")
         except Exception as e:
             flash(f"Could not save expense: {e}", "error")
         return redirect(url_for("add_expense"))
     today = datetime.now(PACIFIC).strftime("%Y-%m-%d")
-    return render_template("add_expense.html", categories=CATEGORIES, today=today)
+    category_tree = _build_category_tree(g.active_umbrella_id) if g.active_umbrella_id else []
+    return render_template("add_expense.html", category_tree=category_tree, today=today)
 
 
 @app.route("/expenses/add/photo", methods=["POST"])
@@ -444,7 +552,7 @@ def add_expense_statement():
 
 
 @app.route("/expenses/add/bulk", methods=["POST"])
-@login_required
+@umbrella_required
 def add_expense_bulk():
     data = request.get_json(silent=True) or {}
     expenses = data.get("expenses", [])
@@ -460,6 +568,7 @@ def add_expense_bulk():
                 exp.get("description", ""),
                 exp.get("date", datetime.now(PACIFIC).strftime("%Y-%m-%d")),
                 "statement",
+                umbrella_id=g.active_umbrella_id,
             )
             saved += 1
     except Exception as e:
@@ -472,7 +581,7 @@ def add_expense_bulk():
 # ------------------------------------------------------------------ #
 
 @app.route("/expenses/<int:id>/edit", methods=["GET", "POST"])
-@login_required
+@umbrella_required
 def edit_expense(id):
     from database.db import get_db
     conn = get_db()
@@ -491,23 +600,33 @@ def edit_expense(id):
         try:
             amount = float(raw_amount)
         except ValueError:
+            umb_id = expense["umbrella_id"] or g.active_umbrella_id
+            tree = _build_category_tree(umb_id) if umb_id else []
             conn.close()
-            return render_template("edit_expense.html", expense=expense, categories=CATEGORIES,
+            return render_template("edit_expense.html", expense=expense, category_tree=tree,
                                    error="Please enter a valid amount.")
+        cat_row = conn.execute(
+            "SELECT id FROM categories WHERE name = ? AND umbrella_id = ?",
+            (category, expense["umbrella_id"]),
+        ).fetchone()
+        category_id = cat_row["id"] if cat_row else expense["category_id"]
         conn.execute(
-            "UPDATE expenses SET amount=?, category=?, description=?, date=? WHERE id=? AND user_id=?",
-            (amount, category, description, date, id, session["user_id"]),
+            "UPDATE expenses SET amount=?, category=?, category_id=?, description=?, date=?"
+            " WHERE id=? AND user_id=?",
+            (amount, category, category_id, description, date, id, session["user_id"]),
         )
         conn.commit()
         conn.close()
         flash("Expense updated.", "success")
         return redirect(url_for("expenses"))
+    umb_id = expense["umbrella_id"] or g.active_umbrella_id
+    category_tree = _build_category_tree(umb_id) if umb_id else []
     conn.close()
-    return render_template("edit_expense.html", expense=expense, categories=CATEGORIES)
+    return render_template("edit_expense.html", expense=expense, category_tree=category_tree)
 
 
 @app.route("/expenses/<int:id>/delete", methods=["POST"])
-@login_required
+@umbrella_required
 def delete_expense(id):
     from database.db import get_db
     conn = get_db()
@@ -521,38 +640,62 @@ def delete_expense(id):
 
 
 @app.route("/expenses/export")
-@login_required
+@umbrella_required
 def export_expenses():
     from database.db import get_db
     month = request.args.get("month", "").strip()
-    conn = get_db()
     if month:
         try:
             datetime.strptime(month, "%Y-%m")
         except ValueError:
             month = ""
-    if month:
-        rows = conn.execute(
-            "SELECT date, description, category, amount, source FROM expenses"
-            " WHERE user_id = ? AND strftime('%Y-%m', date) = ? ORDER BY date DESC",
-            (session["user_id"], month),
-        ).fetchall()
-        filename = f"expenses_{month}.csv"
+
+    conn = get_db()
+    is_power = g.user["role"] == "power"
+
+    _select = (
+        "SELECT e.date, e.description, e.category, e.amount, e.source,"
+        " u.name AS umbrella_name,"
+        " c.name AS cat_name, pc.name AS parent_cat_name"
+        " FROM expenses e"
+        " LEFT JOIN umbrellas u ON u.id = e.umbrella_id"
+        " LEFT JOIN categories c ON c.id = e.category_id"
+        " LEFT JOIN categories pc ON pc.id = c.parent_id"
+    )
+
+    if is_power:
+        if month:
+            rows = conn.execute(
+                _select + " WHERE strftime('%Y-%m', e.date) = ? ORDER BY e.date DESC",
+                (month,),
+            ).fetchall()
+        else:
+            rows = conn.execute(_select + " ORDER BY e.date DESC").fetchall()
     else:
-        rows = conn.execute(
-            "SELECT date, description, category, amount, source FROM expenses"
-            " WHERE user_id = ? ORDER BY date DESC",
-            (session["user_id"],),
-        ).fetchall()
-        filename = "expenses_all.csv"
+        if month:
+            rows = conn.execute(
+                _select + " WHERE e.user_id = ? AND e.umbrella_id = ?"
+                " AND strftime('%Y-%m', e.date) = ? ORDER BY e.date DESC",
+                (session["user_id"], g.active_umbrella_id, month),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                _select + " WHERE e.user_id = ? AND e.umbrella_id = ? ORDER BY e.date DESC",
+                (session["user_id"], g.active_umbrella_id),
+            ).fetchall()
     conn.close()
 
+    filename = f"expenses_{month}.csv" if month else "expenses_all.csv"
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Date", "Description", "Category", "Amount", "Source"])
+    writer.writerow(["Date", "Description", "Category", "Amount", "Source", "Umbrella"])
     for r in rows:
-        writer.writerow([r["date"], r["description"], r["category"],
-                         f"{r['amount']:.2f}", r["source"]])
+        if r["parent_cat_name"] and r["cat_name"]:
+            cat_path = f"{r['parent_cat_name']} > {r['cat_name']}"
+        else:
+            cat_path = r["cat_name"] or r["category"]
+        writer.writerow([r["date"], r["description"], cat_path,
+                         f"{r['amount']:.2f}", r["source"], r["umbrella_name"] or ""])
 
     return Response(
         buf.getvalue(),

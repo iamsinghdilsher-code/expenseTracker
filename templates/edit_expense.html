@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import category_select %}
 
 {% block title %}Edit Expense — Spendly{% endblock %}
 
@@ -25,11 +26,7 @@
                     </div>
                     <div class="form-group">
                         <label for="category">Category</label>
-                        <select id="category" class="form-input form-select" name="category">
-                            {% for cat in categories %}
-                            <option value="{{ cat }}" {{ 'selected' if cat == expense['category'] }}>{{ cat }}</option>
-                            {% endfor %}
-                        </select>
+                        {{ category_select('category', 'category', category_tree, selected=expense['category']) }}
                     </div>
                 </div>
                 <div class="form-row">

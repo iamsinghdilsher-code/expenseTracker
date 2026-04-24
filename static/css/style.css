@@ -1255,6 +1255,38 @@ a { color: inherit; text-decoration: none; }
 }
 .back-link:hover { text-decoration: underline; }
 
+/* ── Umbrella switcher ─────────────────────────────────── */
+.umbrella-bar {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin: 0 0 1.25rem;
+}
+
+.umb-chip {
+    padding: 0.28rem 0.9rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    font-family: var(--font-body);
+    border: 1.5px solid var(--accent);
+    color: var(--accent);
+    text-decoration: none;
+    transition: background 0.15s, color 0.15s;
+    cursor: pointer;
+}
+
+.umb-chip:hover {
+    background: var(--accent);
+    color: #fff;
+}
+
+.umb-chip-active {
+    background: var(--accent);
+    color: #fff;
+    cursor: default;
+}
+
 /* Responsive */
 @media (max-width: 600px) {
     .method-cards { grid-template-columns: 1fr; }

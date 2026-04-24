@@ -1,0 +1,16 @@
+{% macro category_select(id, name, category_tree, selected='') %}
+<select id="{{ id }}" class="form-input form-select" name="{{ name }}">
+    {% for parent in category_tree %}
+        {% if parent.children %}
+            <optgroup label="{{ parent.name }}">
+                <option value="{{ parent.name }}" {{ 'selected' if selected == parent.name }}>{{ parent.name }}</option>
+                {% for child in parent.children %}
+                    <option value="{{ child.name }}" {{ 'selected' if selected == child.name }}>— {{ child.name }}</option>
+                {% endfor %}
+            </optgroup>
+        {% else %}
+            <option value="{{ parent.name }}" {{ 'selected' if selected == parent.name }}>{{ parent.name }}</option>
+        {% endif %}
+    {% endfor %}
+</select>
+{% endmacro %}

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import category_select %}
 
 {% block title %}Dashboard — Spendly{% endblock %}
 
@@ -25,6 +26,23 @@
             <a href="{{ url_for('add_expense') }}" class="btn-primary">+ Add Expense</a>
         </div>
 
+        <!-- Umbrella switcher -->
+        {% if user_umbrellas|length > 1 %}
+        <div class="umbrella-bar">
+            {% for umb in user_umbrellas %}
+                {% if umb['id'] == active_umbrella_id %}
+                    <span class="umb-chip umb-chip-active">{{ umb['name'] }}</span>
+                {% else %}
+                    <a href="{{ url_for('switch_umbrella', umbrella_id=umb['id']) }}" class="umb-chip">{{ umb['name'] }}</a>
+                {% endif %}
+            {% endfor %}
+        </div>
+        {% elif active_umbrella %}
+        <div class="umbrella-bar">
+            <span class="umb-chip umb-chip-active">{{ active_umbrella['name'] }}</span>
+        </div>
+        {% endif %}
+
         <!-- Month nav -->
         <div class="month-nav">
             <a href="{{ url_for('expenses', month=prev_month) }}" class="month-arrow">&#8592;</a>
@@ -39,8 +57,17 @@
                    placeholder="Search description…" value="{{ search }}">
             <select class="filter-cat" name="category">
                 <option value="">All categories</option>
-                {% for c in categories %}
-                <option value="{{ c }}" {% if cat_filter == c %}selected{% endif %}>{{ c }}</option>
+                {% for parent in category_tree %}
+                    {% if parent.children %}
+                        <optgroup label="{{ parent.name }}">
+                            <option value="{{ parent.name }}" {% if cat_filter == parent.name %}selected{% endif %}>{{ parent.name }}</option>
+                            {% for child in parent.children %}
+                                <option value="{{ child.name }}" {% if cat_filter == child.name %}selected{% endif %}>— {{ child.name }}</option>
+                            {% endfor %}
+                        </optgroup>
+                    {% else %}
+                        <option value="{{ parent.name }}" {% if cat_filter == parent.name %}selected{% endif %}>{{ parent.name }}</option>
+                    {% endif %}
                 {% endfor %}
             </select>
             <button class="filter-btn" type="submit">Filter</button>
