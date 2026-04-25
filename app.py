@@ -216,6 +216,25 @@ def _parse_receipt_text(text):
     return result
 
 
+def _normalize_date(raw):
+    """Convert common date formats to YYYY-MM-DD for SQLite strftime compatibility."""
+    if not raw:
+        return datetime.now(PACIFIC).strftime("%Y-%m-%d")
+    raw = raw.strip()
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', raw):
+        return raw
+    m = re.match(r'^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$', raw)
+    if m:
+        mo, day, yr = m.group(1), m.group(2), m.group(3)
+        yr = "20" + yr if len(yr) == 2 else yr
+        return f"{yr}-{mo.zfill(2)}-{day.zfill(2)}"
+    m = re.match(r'^(\d{1,2})[/-](\d{1,2})$', raw)
+    if m:
+        yr = datetime.now(PACIFIC).strftime("%Y")
+        return f"{yr}-{m.group(1).zfill(2)}-{m.group(2).zfill(2)}"
+    return datetime.now(PACIFIC).strftime("%Y-%m-%d")
+
+
 def _parse_csv_statement(content):
     expenses = []
     try:
@@ -243,7 +262,7 @@ def _parse_csv_statement(content):
                 desc = row.get(desc_col, "").strip()[:80] if desc_col else ""
                 raw_card = row.get(card_col, "").strip() if card_col else ""
                 expenses.append({
-                    "date": row.get(date_col, "").strip() if date_col else "",
+                    "date": _normalize_date(row.get(date_col, "") if date_col else ""),
                     "description": desc,
                     "amount": f"{amount:.2f}",
                     "category": _detect_category(desc),
@@ -265,7 +284,7 @@ def _parse_text_statement(text):
     for m in pattern.finditer(text):
         desc = m.group(2).strip()[:80]
         expenses.append({
-            "date": m.group(1),
+            "date": _normalize_date(m.group(1)),
             "description": desc,
             "amount": m.group(3),
             "category": _detect_category(desc),
