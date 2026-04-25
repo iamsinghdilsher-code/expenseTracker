@@ -411,12 +411,15 @@ def _save_expense(user_id, amount, category, description, date, source, umbrella
         conn.close()
 
 
-def _log_audit(action, entity_type, entity_id, description, umbrella_id=None):
-    """Append one row to audit_log for the current request actor. Fire-and-forget; never raises."""
+def _log_audit(action, entity_type, entity_id, description, umbrella_id=None,
+               actor_id=None, actor_name=None):
+    """Append one row to audit_log. actor_id/actor_name default to the current session user."""
     from database.db import get_db
     try:
-        actor_id = session.get("user_id")
-        actor_name = (g.user["name"] if g.user else "") or ""
+        if actor_id is None:
+            actor_id = session.get("user_id")
+        if actor_name is None:
+            actor_name = (g.user["name"] if g.user else "") or ""
         conn = get_db()
         conn.execute(
             "INSERT INTO audit_log"
@@ -429,6 +432,17 @@ def _log_audit(action, entity_type, entity_id, description, umbrella_id=None):
         conn.close()
     except Exception:
         pass
+
+
+def _parse_email_sender(from_field):
+    """Return bare lowercase email address from 'Name <email>' or plain 'email' string."""
+    m = re.search(r'<([^>]+)>', from_field or '')
+    return (m.group(1) if m else (from_field or '')).strip().lower()
+
+
+def _strip_html(html):
+    """Strip HTML tags and collapse whitespace for plain-text fallback."""
+    return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', html or '')).strip()
 
 
 # ------------------------------------------------------------------ #
@@ -1170,6 +1184,12 @@ def admin_dashboard():
     next_m = f"{y+1}-01" if m_int == 12 else f"{y}-{m_int+1:02d}"
     month_label = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
 
+    webhook_secret = os.environ.get("WEBHOOK_SECRET", "")
+    webhook_url = (
+        url_for("email_inbound_webhook", token=webhook_secret, _external=True)
+        if webhook_secret else None
+    )
+
     return render_template(
         "admin.html",
         month=month,
@@ -1189,6 +1209,8 @@ def admin_dashboard():
         trend_values=[round(r["total"], 2) for r in trend_rows],
         drafts=drafts,
         budget_rows=budget_rows,
+        webhook_url=webhook_url,
+        webhook_configured=bool(webhook_secret),
     )
 
 
@@ -1535,11 +1557,161 @@ def use_invite(token):
 
 
 # ------------------------------------------------------------------ #
+# Email Ingestion Webhook (Phase 9)                                   #
+# ------------------------------------------------------------------ #
+
+@app.route("/webhooks/email/inbound", methods=["POST"])
+def email_inbound_webhook():
+    """Postmark inbound webhook — parses forwarded receipts/statements into draft expenses."""
+    import base64
+
+    secret = os.environ.get("WEBHOOK_SECRET", "")
+    if not secret or request.args.get("token") != secret:
+        return jsonify({"error": "Unauthorized"}), 403
+
+    data = request.get_json(silent=True) or {}
+
+    sender_email = _parse_email_sender(data.get("From", ""))
+    if not sender_email:
+        return jsonify({"status": "ignored", "reason": "no sender"}), 200
+
+    from database.db import get_db
+    conn = get_db()
+    user = conn.execute(
+        "SELECT id, name, email FROM users WHERE LOWER(email) = ?", (sender_email,)
+    ).fetchone()
+    if not user:
+        conn.close()
+        return jsonify({"status": "ignored", "reason": "sender not registered"}), 200
+
+    umbrella_row = conn.execute(
+        "SELECT umbrella_id FROM umbrella_access WHERE user_id = ? LIMIT 1",
+        (user["id"],),
+    ).fetchone()
+    conn.close()
+    if not umbrella_row:
+        return jsonify({"status": "ignored", "reason": "no umbrella"}), 200
+
+    umbrella_id = umbrella_row["umbrella_id"]
+    subject = data.get("Subject", "") or ""
+
+    # ---- collect parsed expense rows from attachments ----
+    batch_expenses = []
+    single_receipt = None
+
+    for att in data.get("Attachments", []):
+        raw = att.get("Content", "")
+        if not raw:
+            continue
+        try:
+            content = base64.b64decode(raw)
+        except Exception:
+            continue
+        name = (att.get("Name") or "").lower()
+        ctype = (att.get("ContentType") or "").lower()
+
+        if "pdf" in ctype or name.endswith(".pdf"):
+            batch_expenses.extend(_parse_pdf_statement(content))
+
+        elif "csv" in ctype or name.endswith(".csv"):
+            batch_expenses.extend(
+                _parse_csv_statement(content.decode("utf-8", errors="ignore"))
+            )
+
+        elif any(name.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")):
+            fpath = os.path.join(app.config["UPLOAD_FOLDER"],
+                                 f"email_{secure_filename(att.get('Name', 'img'))}")
+            try:
+                with open(fpath, "wb") as fh:
+                    fh.write(content)
+                import pytesseract
+                from PIL import Image
+                text = pytesseract.image_to_string(Image.open(fpath))
+                parsed = _llm_parse_receipt(text)
+                if parsed.get("amount"):
+                    single_receipt = parsed
+            except Exception:
+                pass
+
+    # ---- fallback: parse email body if no attachment results ----
+    if not batch_expenses and not single_receipt:
+        body = data.get("TextBody") or _strip_html(data.get("HtmlBody", ""))
+        if body:
+            pattern_count = len(re.findall(
+                r'\d{1,2}[/-]\d{1,2}.*?\$?\d+\.\d{2}', body, re.MULTILINE
+            ))
+            if pattern_count >= 3:
+                batch_expenses = _parse_text_statement(body)
+            else:
+                parsed = _llm_parse_receipt(body)
+                if parsed.get("amount"):
+                    single_receipt = parsed
+
+    if batch_expenses:
+        batch_expenses = _llm_categorize_batch(batch_expenses)
+
+    # ---- persist as draft expenses ----
+    saved = 0
+    skipped = 0
+    today = datetime.now(PACIFIC).strftime("%Y-%m-%d")
+
+    def _ingest_one(amount_raw, category, description, date, confidence, last_four):
+        nonlocal saved, skipped
+        try:
+            pm_id = _match_payment_method(last_four, umbrella_id) if last_four else None
+            _save_expense(
+                user["id"], float(amount_raw), category,
+                description[:80], date or today,
+                "email", umbrella_id=umbrella_id,
+                payment_method_id=pm_id,
+                status="draft",
+                confidence_score=float(confidence),
+            )
+            saved += 1
+        except DuplicateExpenseError:
+            skipped += 1
+        except Exception:
+            skipped += 1
+
+    if single_receipt and single_receipt.get("amount"):
+        _ingest_one(
+            single_receipt["amount"],
+            single_receipt.get("category", "Other"),
+            single_receipt.get("description") or subject or "Email receipt",
+            single_receipt.get("date", ""),
+            single_receipt.get("confidence_score", 0.8),
+            single_receipt.get("last_four"),
+        )
+
+    for exp in batch_expenses:
+        if exp.get("amount"):
+            _ingest_one(
+                exp["amount"],
+                exp.get("category", "Other"),
+                exp.get("description", "") or subject,
+                exp.get("date", ""),
+                exp.get("confidence_score", 0.8),
+                exp.get("last_four"),
+            )
+
+    if saved > 0 or skipped > 0:
+        _log_audit(
+            "email_ingest", "expense", None,
+            f"Email from {sender_email}: {saved} saved, {skipped} skipped -- \"{subject}\"",
+            umbrella_id=umbrella_id,
+            actor_id=user["id"],
+            actor_name=user["name"] or user["email"],
+        )
+
+    return jsonify({"status": "ok", "saved": saved, "skipped": skipped})
+
+
+# ------------------------------------------------------------------ #
 # Admin — Audit Trail (Phase 8)                                       #
 # ------------------------------------------------------------------ #
 
 AUDIT_ENTITY_TYPES = ["expense", "payment_method", "budget", "user", "umbrella_access", "invite", "profile"]
-AUDIT_ACTIONS = ["create", "update", "delete", "confirm", "role_change", "grant", "revoke", "invite_use"]
+AUDIT_ACTIONS = ["create", "update", "delete", "confirm", "role_change", "grant", "revoke", "invite_use", "email_ingest"]
 
 
 @app.route("/admin/audit")

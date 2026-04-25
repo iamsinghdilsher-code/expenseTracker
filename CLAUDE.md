@@ -23,7 +23,7 @@ graphify update .
 
 Tesseract OCR must be installed separately (Windows default path `C:\Program Files\Tesseract-OCR\tesseract.exe` is auto-detected). Set `ANTHROPIC_API_KEY` to enable LLM-based receipt parsing and batch categorization; the app falls back to regex if the key is absent.
 
-## Current State (as of 2026-04-24, Phase 7 complete)
+## Current State (as of 2026-04-24, Phase 9 complete)
 
 Flask expense tracker ("Spendly") — Jinja2 templates, SQLite, no ORM. Phases 1–6 are complete. The app is fully multi-tenant with umbrella-scoped data, a Power User admin dashboard, and an LLM-assisted ingestion pipeline.
 
@@ -61,10 +61,10 @@ Flask expense tracker ("Spendly") — Jinja2 templates, SQLite, no ORM. Phases 1
 - Role toggle: promote normal → power or demote power → normal (cannot self-demote)
 - Invite links: power user generates a single-use token URL (`/invite/<token>`); any logged-in user who visits it is added to the target umbrella and switched to it; token is marked used
 
-### What Is NOT Yet Implemented (Phases 8–9)
+### What Is Implemented (Phases 8–9)
 
-- **Phase 8 — Audit Trail**: `audit_log` table, `/admin/audit` filterable view
-- **Phase 9 — Email Ingestion**: Inbound webhook (Postmark/SendGrid) → existing parsers
+- **Phase 8 — Audit Trail**: `audit_log` table, `_log_audit()` helper, `/admin/audit` filterable view (by entity type, action, actor, date range). 20 call sites covering all mutations. Accessible via "Audit Trail" button on admin dashboard.
+- **Phase 9 — Email Ingestion**: `POST /webhooks/email/inbound` secured by `WEBHOOK_SECRET` env var. Accepts Postmark inbound JSON — parses PDF/CSV/image attachments and email body text through existing parsers (`_parse_pdf_statement`, `_parse_csv_statement`, `_llm_parse_receipt`, `_parse_text_statement`). Saves as `status='draft'` expenses. Webhook URL shown on admin dashboard when `WEBHOOK_SECRET` is set. New `source='email'` value on expenses.
 
 ---
 

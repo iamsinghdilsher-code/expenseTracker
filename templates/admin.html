@@ -232,6 +232,50 @@
             {% endif %}
         </div>
 
+        <!-- Email Ingestion config -->
+        <div class="dash-card" style="margin-top:1.5rem;padding:1.25rem 1.5rem">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap">
+                <div>
+                    <h2 class="table-title" style="margin-bottom:0.4rem">Email Ingestion</h2>
+                    <p style="font-size:0.875rem;color:var(--ink-muted);margin:0">
+                        Forward receipts or bank statements to this webhook to create draft expenses automatically.
+                    </p>
+                </div>
+                <span class="role-badge role-{% if webhook_configured %}power{% else %}normal{% endif %}"
+                      style="white-space:nowrap;flex-shrink:0">
+                    {% if webhook_configured %}configured{% else %}not configured{% endif %}
+                </span>
+            </div>
+
+            {% if webhook_configured %}
+            <div style="margin-top:1rem">
+                <p style="font-size:0.8rem;color:var(--ink-muted);margin-bottom:0.35rem">Postmark inbound webhook URL</p>
+                <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap">
+                    <code id="webhook-url"
+                          style="font-size:0.8rem;background:var(--surface-2,#f4f0e8);padding:0.45rem 0.75rem;
+                                 border-radius:6px;word-break:break-all;flex:1;min-width:0">
+                        {{ webhook_url }}
+                    </code>
+                    <button onclick="navigator.clipboard.writeText(document.getElementById('webhook-url').textContent.trim());this.textContent='Copied!';"
+                            class="btn-ghost"
+                            style="padding:0.35rem 0.75rem;font-size:0.82rem;white-space:nowrap;flex-shrink:0">
+                        Copy
+                    </button>
+                </div>
+                <p style="font-size:0.78rem;color:var(--ink-muted);margin-top:0.6rem;margin-bottom:0">
+                    In Postmark: Settings → Inbound → set this URL as your webhook.
+                    Emails sent from a registered user's address will be parsed into draft expenses.
+                </p>
+            </div>
+            {% else %}
+            <div style="margin-top:0.85rem;font-size:0.875rem;color:var(--ink-muted)">
+                Set the <code style="font-size:0.82rem;background:var(--surface-2,#f4f0e8);padding:0.15rem 0.4rem;border-radius:4px">WEBHOOK_SECRET</code>
+                environment variable to activate inbound email parsing.
+                Any non-empty string works — it becomes the security token in the webhook URL.
+            </div>
+            {% endif %}
+        </div>
+
     </div>
 </section>
 {% endblock %}
