@@ -3,6 +3,7 @@ import csv
 import hashlib
 import io
 import re
+import secrets
 import sqlite3
 from datetime import datetime
 from functools import wraps
@@ -1255,6 +1256,191 @@ def admin_delete_budget(id):
     conn.close()
     flash("Budget removed.", "success")
     return redirect(url_for("admin_budgets", month=month))
+
+
+# ------------------------------------------------------------------ #
+# Admin — Permission Manager (Phase 7)                               #
+# ------------------------------------------------------------------ #
+
+@app.route("/admin/users")
+@power_required
+def admin_users():
+    from database.db import get_db
+    conn = get_db()
+
+    users = conn.execute(
+        "SELECT id, name, email, role, created_at FROM users ORDER BY created_at DESC"
+    ).fetchall()
+
+    user_list = []
+    for user in users:
+        memberships = conn.execute(
+            "SELECT ua.umbrella_id, ua.role as access_role, umb.name as umbrella_name"
+            " FROM umbrella_access ua"
+            " JOIN umbrellas umb ON umb.id = ua.umbrella_id"
+            " WHERE ua.user_id = ? ORDER BY umb.name",
+            (user["id"],),
+        ).fetchall()
+        user_list.append({"user": user, "memberships": memberships})
+
+    all_umbrellas = conn.execute("SELECT id, name FROM umbrellas ORDER BY name").fetchall()
+
+    invite_links = conn.execute(
+        "SELECT il.id, il.token, il.created_at, il.used_at,"
+        " umb.name as umbrella_name,"
+        " creator.name as creator_name,"
+        " claimer.name as claimer_name"
+        " FROM invite_links il"
+        " JOIN umbrellas umb ON umb.id = il.umbrella_id"
+        " JOIN users creator ON creator.id = il.created_by"
+        " LEFT JOIN users claimer ON claimer.id = il.used_by"
+        " ORDER BY il.created_at DESC LIMIT 30"
+    ).fetchall()
+
+    conn.close()
+    return render_template(
+        "admin_users.html",
+        user_list=user_list,
+        all_umbrellas=all_umbrellas,
+        invite_links=invite_links,
+    )
+
+
+@app.route("/admin/users/<int:id>/role", methods=["POST"])
+@power_required
+def admin_set_user_role(id):
+    from database.db import get_db
+    if id == session["user_id"]:
+        flash("You cannot change your own role.", "error")
+        return redirect(url_for("admin_users"))
+    conn = get_db()
+    user = conn.execute("SELECT id, role FROM users WHERE id = ?", (id,)).fetchone()
+    if not user:
+        conn.close()
+        flash("User not found.", "error")
+        return redirect(url_for("admin_users"))
+    new_role = "power" if user["role"] == "normal" else "normal"
+    conn.execute("UPDATE users SET role = ? WHERE id = ?", (new_role, id))
+    conn.commit()
+    conn.close()
+    flash(f"Role updated to '{new_role}'.", "success")
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/users/<int:id>/umbrella/grant", methods=["POST"])
+@power_required
+def admin_grant_umbrella(id):
+    from database.db import get_db
+    umbrella_id = request.form.get("umbrella_id", "").strip()
+    if not umbrella_id.isdigit():
+        flash("Invalid umbrella.", "error")
+        return redirect(url_for("admin_users"))
+    conn = get_db()
+    user = conn.execute("SELECT id FROM users WHERE id = ?", (id,)).fetchone()
+    umbrella = conn.execute("SELECT id FROM umbrellas WHERE id = ?", (int(umbrella_id),)).fetchone()
+    if not user or not umbrella:
+        conn.close()
+        flash("User or umbrella not found.", "error")
+        return redirect(url_for("admin_users"))
+    try:
+        conn.execute(
+            "INSERT INTO umbrella_access (user_id, umbrella_id, role, created_at)"
+            " VALUES (?, ?, 'member', ?)",
+            (id, int(umbrella_id), datetime.now(PACIFIC).isoformat()),
+        )
+        conn.commit()
+        flash("Umbrella access granted.", "success")
+    except sqlite3.IntegrityError:
+        flash("User already has access to this umbrella.", "warning")
+    conn.close()
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/users/<int:user_id>/umbrella/<int:umbrella_id>/revoke", methods=["POST"])
+@power_required
+def admin_revoke_umbrella(user_id, umbrella_id):
+    from database.db import get_db
+    conn = get_db()
+    conn.execute(
+        "DELETE FROM umbrella_access WHERE user_id = ? AND umbrella_id = ?",
+        (user_id, umbrella_id),
+    )
+    conn.commit()
+    conn.close()
+    flash("Umbrella access revoked.", "success")
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/invites/create", methods=["POST"])
+@power_required
+def admin_create_invite():
+    from database.db import get_db
+    umbrella_id = request.form.get("umbrella_id", "").strip()
+    if not umbrella_id.isdigit():
+        flash("Please select an umbrella.", "error")
+        return redirect(url_for("admin_users"))
+    token = secrets.token_urlsafe(16)
+    conn = get_db()
+    umbrella = conn.execute("SELECT id FROM umbrellas WHERE id = ?", (int(umbrella_id),)).fetchone()
+    if not umbrella:
+        conn.close()
+        flash("Umbrella not found.", "error")
+        return redirect(url_for("admin_users"))
+    conn.execute(
+        "INSERT INTO invite_links (token, umbrella_id, created_by, created_at)"
+        " VALUES (?, ?, ?, ?)",
+        (token, int(umbrella_id), session["user_id"], datetime.now(PACIFIC).isoformat()),
+    )
+    conn.commit()
+    conn.close()
+    flash("Invite link created.", "success")
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/invites/<int:id>/delete", methods=["POST"])
+@power_required
+def admin_delete_invite(id):
+    from database.db import get_db
+    conn = get_db()
+    conn.execute("DELETE FROM invite_links WHERE id = ?", (id,))
+    conn.commit()
+    conn.close()
+    flash("Invite link deleted.", "success")
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/invite/<token>")
+@login_required
+def use_invite(token):
+    from database.db import get_db
+    conn = get_db()
+    link = conn.execute(
+        "SELECT * FROM invite_links WHERE token = ? AND used_by IS NULL", (token,)
+    ).fetchone()
+    if not link:
+        conn.close()
+        flash("This invite link is invalid or has already been used.", "error")
+        return redirect(url_for("expenses"))
+    try:
+        conn.execute(
+            "INSERT INTO umbrella_access (user_id, umbrella_id, role, created_at)"
+            " VALUES (?, ?, 'member', ?)",
+            (session["user_id"], link["umbrella_id"], datetime.now(PACIFIC).isoformat()),
+        )
+    except sqlite3.IntegrityError:
+        pass  # already a member — still mark invite used
+    conn.execute(
+        "UPDATE invite_links SET used_by = ?, used_at = ? WHERE id = ?",
+        (session["user_id"], datetime.now(PACIFIC).isoformat(), link["id"]),
+    )
+    conn.commit()
+    umbrella = conn.execute(
+        "SELECT name FROM umbrellas WHERE id = ?", (link["umbrella_id"],)
+    ).fetchone()
+    conn.close()
+    session["active_umbrella_id"] = link["umbrella_id"]
+    flash(f"You've joined '{umbrella['name']}'!", "success")
+    return redirect(url_for("expenses"))
 
 
 if __name__ == "__main__":

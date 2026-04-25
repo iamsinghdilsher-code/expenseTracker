@@ -14,166 +14,97 @@ python app.py
 # Run tests
 pytest
 
+# Run a single test file
+pytest tests/test_auth.py -v
+
 # Update knowledge graph after modifying code files
 graphify update .
 ```
 
-## Current State (as of 2026-04-24)
+Tesseract OCR must be installed separately (Windows default path `C:\Program Files\Tesseract-OCR\tesseract.exe` is auto-detected). Set `ANTHROPIC_API_KEY` to enable LLM-based receipt parsing and batch categorization; the app falls back to regex if the key is absent.
 
-This is a Flask expense tracker application ("Spendly") using Jinja2 templates and SQLite.
-It is a single-tenant app being evolved into a multi-tenant family/business financial system.
+## Current State (as of 2026-04-24, Phase 7 complete)
+
+Flask expense tracker ("Spendly") — Jinja2 templates, SQLite, no ORM. Phases 1–6 are complete. The app is fully multi-tenant with umbrella-scoped data, a Power User admin dashboard, and an LLM-assisted ingestion pipeline.
 
 ### What Is Implemented
 
-**Auth**: `/register`, `/login`, `/logout` — full session auth with password hashing (werkzeug).
-`login_required` decorator guards all protected routes. `load_user()` runs before every request
-and injects `current_user` into all templates via context processor.
+**Auth & access control**: `/register`, `/login`, `/logout`. Three route guards stack on top of each other: `login_required` → `umbrella_required` → `power_required`. `load_user()` (`@app.before_request`) populates `g.user`, `g.active_umbrella_id`, `g.active_umbrella`, and `g.umbrellas` on every request; `inject_user()` context processor makes these available in every template.
 
-**Expense CRUD**: `/expenses` (dashboard), `/expenses/add`, `/expenses/<id>/edit`,
-`/expenses/<id>/delete`, `/expenses/export` — all fully implemented.
+**Multi-tenant umbrella model**: Every expense, category, and payment method belongs to an umbrella. Users can belong to multiple umbrellas; `/switch-umbrella/<id>` updates `session["active_umbrella_id"]`. Normal users are isolated to their own data within permitted umbrellas. Power users (`role = 'power'`) bypass the `user_id` filter and can edit/delete any expense.
 
-**Ingestion pipeline** (three methods on the add expense page):
-- Manual form entry
-- Photo upload → Tesseract OCR → `_parse_receipt_text()` → pre-fills form
-- CSV file or pasted text → `_parse_csv_statement()` / `_parse_text_statement()` → bulk import
+**Expense CRUD**: Dashboard (`/expenses`), add, edit, delete, CSV export — all umbrella-aware. Edit/delete allow power users to operate cross-user.
 
-**Auto-categorization**: `_detect_category(description)` uses regex against ~15 hardcoded
-merchant keywords. Returns one of 7 flat categories: Bills, Food, Health, Transport,
-Entertainment, Shopping, Other.
+**Ingestion pipeline** — three paths, all funnel into `_save_expense()`:
+- Manual form → `add_expense()` POST
+- Photo upload → `add_expense_photo()` (JSON) → `_llm_parse_receipt()` → prefills form → manual confirm
+- CSV / PDF / pasted text → `add_expense_statement()` (JSON) → `_llm_categorize_batch()` → user reviews table → `add_expense_bulk()` (JSON)
 
-**Profile**: `/profile` — name update, password change, basic stats (expense count, total, top category).
+**LLM features** (requires `ANTHROPIC_API_KEY`): `_llm_parse_receipt()` and `_llm_categorize_batch()` call `claude-haiku-4-5-20251001` with an ephemeral-cached system prompt. Both fall back to regex silently if the key is absent.
 
-**Public pages**: `/` (landing), `/terms`, `/privacy`.
+**Confidence gating & deduplication**: `_save_expense()` auto-downgrades status to `'draft'` when `confidence_score < 0.85`. Deduplication uses a SHA-256 hash of `"user_id:amount:.2f:date:description"` stored in `expenses.dedup_hash` (partial unique index, NULLs excluded for legacy rows).
 
-### What Is NOT Yet Implemented (see Roadmap below)
+**Payment method registry**: `/payment-methods` CRUD. `_extract_last_four()` pulls card digits from OCR/CSV text; `_match_payment_method()` looks up the umbrella's registered cards. Unmatched cards set `status = 'draft'`.
 
-- Multi-tenant umbrella architecture (Home / Business 1 / Business 2)
-- Hierarchical categories (parent > child tree)
-- Power User role with global cross-umbrella view
-- Payment method registry + automated card-owner matching
-- PDF statement parser
-- LLM-based semantic categorization
-- Confidence scoring / draft state for low-confidence expenses
-- Deduplication (hash-based duplicate prevention)
-- Power User admin dashboard
-- Permission manager (grant/revoke umbrella access per user)
-- Audit trail log
-- Email ingestion webhook
+**Admin dashboard** (`/admin`, power users only):
+- Summary stats, month navigator, spending charts (by umbrella, by category, 6-month trend bar)
+- Per-user spending table
+- Draft queue with one-click Confirm, Edit, Delete
+- Budget overview with inline progress bars
+
+**Budget tracker** (`/admin/budgets`): Power User sets monthly limits per `(umbrella, category, month)`. Upserted via `INSERT … ON CONFLICT DO UPDATE`.
+
+**Seed data**: `seed_db(user_id)` (called at registration) creates a Home umbrella, seeds the 7 default categories, and inserts 17 sample expenses.
+
+**Permission Manager** (`/admin/users`, power users only):
+- All-users table with role badges (normal/power), umbrella memberships, per-user grant/revoke
+- Role toggle: promote normal → power or demote power → normal (cannot self-demote)
+- Invite links: power user generates a single-use token URL (`/invite/<token>`); any logged-in user who visits it is added to the target umbrella and switched to it; token is marked used
+
+### What Is NOT Yet Implemented (Phases 8–9)
+
+- **Phase 8 — Audit Trail**: `audit_log` table, `/admin/audit` filterable view
+- **Phase 9 — Email Ingestion**: Inbound webhook (Postmark/SendGrid) → existing parsers
 
 ---
 
 ## Architecture
 
-### Routing (`app.py`)
+### Single-file routing (`app.py`)
 
-All routes live in `app.py`. Key groupings:
+All routes live in `app.py`. Route groups:
 
 | Group | Routes |
 |---|---|
 | Public | `/`, `/terms`, `/privacy` |
-| Auth | `/register`, `/login`, `/logout` |
+| Auth | `/register`, `/login`, `/logout`, `/switch-umbrella/<id>` |
 | Profile | `/profile` |
 | Expenses | `/expenses`, `/expenses/add`, `/expenses/<id>/edit`, `/expenses/<id>/delete`, `/expenses/export` |
-| Ingestion | `/expenses/add/photo` (OCR), `/expenses/add/statement` (CSV/text), `/expenses/add/bulk` (JSON batch save) |
-
-### Templates
-
-All pages extend `templates/base.html` (shared navbar + footer).
-`current_user` is available in every template via context processor.
+| Ingestion (JSON APIs) | `/expenses/add/photo`, `/expenses/add/statement`, `/expenses/add/bulk` |
+| Payment methods | `/payment-methods`, `/payment-methods/add`, `/payment-methods/<id>/edit`, `/payment-methods/<id>/delete` |
+| Admin | `/admin`, `/admin/expenses/<id>/confirm`, `/admin/expenses/<id>/delete`, `/admin/budgets`, `/admin/budgets/set`, `/admin/budgets/<id>/delete` |
+| Permission Manager | `/admin/users`, `/admin/users/<id>/role`, `/admin/users/<id>/umbrella/grant`, `/admin/users/<user_id>/umbrella/<umbrella_id>/revoke`, `/admin/invites/create`, `/admin/invites/<id>/delete`, `/invite/<token>` |
 
 ### Database (`database/db.py`)
 
-SQLite with `row_factory = sqlite3.Row` and `PRAGMA foreign_keys = ON`.
-Database file `expense_tracker.db` is gitignored.
+SQLite with `row_factory = sqlite3.Row` and `PRAGMA foreign_keys = ON`. `get_db()` opens a new connection each call — callers must close it. No connection pooling.
 
-**Current tables**: `users`, `expenses`
+**Tables**: `users` · `umbrellas` · `umbrella_access` · `categories` (tree via `parent_id`) · `payment_methods` · `expenses` · `budgets`
 
-**Planned tables** (see Roadmap):
-`umbrellas`, `umbrella_access`, `categories` (hierarchical), `payment_methods`,
-`audit_log` — plus new columns on `expenses`: `umbrella_id`, `category_id`,
-`payment_method_id`, `confidence_score`, `status`
+Column migrations run inside `init_db()` wrapped in individual try/except blocks so a duplicate-column error on an existing DB doesn't abort the rest.
+
+`get_category_tree(conn, umbrella_id)` returns `[{id, name, children:[{id, name}]}]` — used everywhere a category dropdown or filter needs the tree.
 
 ### Frontend
 
-CSS design system in `static/css/style.css` — CSS variables, green (`#1a472a`) and
-orange (`#c17f24`) palette, DM Serif Display / DM Sans fonts.
-`static/js/main.js` is currently minimal.
+All pages extend `templates/base.html`. `_macros.html` contains the `category_select` macro. Charts use Chart.js 4.4 loaded from CDN (doughnut on dashboard, bar + doughnut + line on admin). CSS design system in `static/css/style.css` — CSS variables, green `#1a472a` / orange `#c17f24` palette, DM Serif Display / DM Sans fonts.
 
-### Constants
+### Key invariants
 
-- Currency: US Dollar ($) throughout
-- Timezone: Pacific Time (`America/Los_Angeles`)
-- Upload folder: `uploads/` (gitignored)
-- Max upload size: 16 MB
-
----
-
-## Development Roadmap
-
-The full plan is a 9-phase build. **Phases 1–3 are blockers for everything else.**
-
-### Phase 1 — Restructure the Database
-1. Add `umbrellas` table (Home, Business 1, Business 2 — each with an owner_id)
-2. Add `role` column to `users` (`power` or `normal`)
-3. Add `umbrella_access` table (maps user ↔ umbrella with role scope)
-4. Rebuild `categories` as a tree (`parent_id`, `umbrella_id`) replacing the flat 7-item list
-5. Add `payment_methods` table (last_four, bank_name, card_type, user_id, umbrella_id)
-6. Add columns to `expenses`: `umbrella_id`, `category_id`, `payment_method_id`,
-   `confidence_score` (float), `status` (draft | confirmed)
-7. Write migration script to move existing data without loss
-
-### Phase 2 — Auth & Access Control
-8. On registration: create/join an umbrella, store `active_umbrella_id` in session
-9. Add `umbrella_required` guard alongside `login_required`
-10. Power User (`role = power`) bypasses data isolation filters
-11. Normal User sees only their own expenses within permitted umbrellas
-12. Updated seed script creates default umbrellas + categories
-
-### Phase 3 — Rebuild Expense Flow (Umbrella-Aware)
-13. Dashboard filters by `umbrella_id` + hierarchical `category_id`
-14. Add/edit/delete attach `umbrella_id` from session
-15. Category dropdown shows parent > child tree
-16. Pie chart breaks down by sub-category within active umbrella
-17. CSV export includes umbrella + full category path
-
-### Phase 4 — Payment Method Registry + Card Mapping
-18. `/payment-methods` CRUD (add/edit/delete cards)
-19. Matching function: extracted last-4 → lookup `payment_methods` → return owner + umbrella
-20. Photo upload: OCR → extract last-4 → auto-assign owner
-21. CSV/statement import: extract last-4 per row → auto-assign owner
-22. No match → status = `draft`
-
-### Phase 5 — Smarter Ingestion Pipeline
-23. LLM call replaces regex `_parse_receipt_text` — extract merchant, amount, date, last-4
-24. PDF statement parser (pdfplumber) for credit card PDF statements
-25. LLM categorization: merchant + user history → category + umbrella + confidence score
-26. Confidence gating: score < 0.85 → status = `draft`, else auto-confirm
-27. Deduplication: hash `(user_id, amount, date, description)` before insert
-
-### Phase 6 — Power User Dashboard
-28. `/admin` route (Power User only)
-29. Consolidated view across all umbrellas and users
-30. Draft queue: all `status = draft` expenses, one-click confirm/edit
-31. Spending charts: by umbrella, by user, by category, by month
-32. Budget tracker: Power User sets monthly budget per umbrella/category
-
-### Phase 7 — Permission Manager
-33. `/admin/users` — list users with roles and umbrella access
-34. Promote/demote users (normal ↔ power)
-35. Grant/revoke umbrella access per user
-36. Invite link system: new user joins pre-assigned umbrella + role
-
-### Phase 8 — Audit Trail
-37. `audit_log` table: event_type, user_id, target, old_value, new_value, timestamp
-38. Log: expense CRUD, AI suggestion vs. human override, permission changes, login/logout
-39. `/admin/audit` filterable view for Power User
-
-### Phase 9 — Email Ingestion
-40. Inbound email webhook (Postmark or SendGrid)
-41. Sender address → match to user
-42. Attachment (PDF/image) → route to existing parsers
-43. Receipt in email body → LLM extracts merchant + amount
-44. Save as `draft` tagged to sender's user + default umbrella
+- `CATEGORIES` list in `app.py` is the canonical 7-item flat list used for category dropdowns, budget forms, and `_detect_category()` regex fallback. The DB stores these as top-level rows in the `categories` table per umbrella.
+- Timezone is Pacific (`America/Los_Angeles`) throughout — all `datetime.now()` calls use `PACIFIC`.
+- Upload folder is `uploads/` (gitignored); max 16 MB.
+- Currency is USD throughout.
 
 ---
 
@@ -181,9 +112,6 @@ The full plan is a 9-phase build. **Phases 1–3 are blockers for everything els
 
 This project has a graphify knowledge graph at `graphify-out/`.
 
-Rules:
-- Before answering architecture or codebase questions, read `graphify-out/GRAPH_REPORT.md`
-  for god nodes and community structure
+- Before answering architecture or codebase questions, read `graphify-out/GRAPH_REPORT.md` for god nodes and community structure
 - If `graphify-out/wiki/index.md` exists, navigate it instead of reading raw files
-- After modifying code files in this session, run `graphify update .` to keep the graph
-  current (AST-only, no API cost)
+- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)

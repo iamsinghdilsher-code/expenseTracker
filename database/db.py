@@ -77,6 +77,16 @@ def init_db():
             created_at TEXT NOT NULL,
             UNIQUE(umbrella_id, category, month)
         );
+        CREATE TABLE IF NOT EXISTS invite_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token TEXT UNIQUE NOT NULL,
+            umbrella_id INTEGER NOT NULL REFERENCES umbrellas(id),
+            created_by INTEGER NOT NULL REFERENCES users(id),
+            created_at TEXT NOT NULL,
+            expires_at TEXT,
+            used_by INTEGER REFERENCES users(id),
+            used_at TEXT
+        );
     """)
 
     # Column migrations — each wrapped individually so one failure doesn't block the rest

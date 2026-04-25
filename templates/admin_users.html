@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+
+{% block title %}User Management — Spendly Admin{% endblock %}
+
+{% block content %}
+<section class="dash-section">
+    <div class="admin-inner">
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}
+                <div class="flash flash-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endwith %}
+
+        <!-- Header -->
+        <div class="dash-header">
+            <div>
+                <h1 class="dash-title">User Management</h1>
+                <p class="dash-subtitle">Manage roles, umbrella access, and invite links.</p>
+            </div>
+            <a href="{{ url_for('admin_dashboard') }}" class="btn-ghost">&#8592; Admin Dashboard</a>
+        </div>
+
+        <!-- Users table -->
+        <div class="dash-card table-card" style="margin-bottom:1.5rem">
+            <div class="table-header">
+                <h2 class="table-title">All Users</h2>
+            </div>
+            {% if user_list %}
+            <div class="table-wrap">
+                <table class="expense-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Email</th>
+                            <th>Role</th>
+                            <th>Umbrella Access</th>
+                            <th>Grant Access</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in user_list %}
+                        {% set user = item.user %}
+                        <tr>
+                            <td class="col-desc">{{ user['name'] or '—' }}</td>
+                            <td style="font-size:0.85rem;color:var(--ink-muted)">{{ user['email'] }}</td>
+                            <td>
+                                <span class="role-badge role-{{ user['role'] }}">{{ user['role'] }}</span>
+                            </td>
+                            <td>
+                                {% for m in item.memberships %}
+                                <span class="umbrella-chip">
+                                    {{ m['umbrella_name'] }}
+                                    {% if user['id'] != current_user['id'] %}
+                                    <form method="POST"
+                                          action="{{ url_for('admin_revoke_umbrella', user_id=user['id'], umbrella_id=m['umbrella_id']) }}"
+                                          style="display:inline"
+                                          onsubmit="return confirm('Revoke access to {{ m['umbrella_name'] }}?')">
+                                        <button type="submit" class="chip-remove" title="Revoke">×</button>
+                                    </form>
+                                    {% endif %}
+                                </span>
+                                {% else %}
+                                <span style="font-size:0.8rem;color:var(--ink-muted)">none</span>
+                                {% endfor %}
+                            </td>
+                            <td>
+                                {% if user['id'] != current_user['id'] %}
+                                <form method="POST"
+                                      action="{{ url_for('admin_grant_umbrella', id=user['id']) }}"
+                                      style="display:flex;gap:0.4rem;align-items:center">
+                                    <select name="umbrella_id" class="form-input form-select"
+                                            style="padding:0.3rem 0.5rem;font-size:0.82rem;min-width:130px" required>
+                                        <option value="">Pick umbrella…</option>
+                                        {% for umb in all_umbrellas %}
+                                        <option value="{{ umb['id'] }}">{{ umb['name'] }}</option>
+                                        {% endfor %}
+                                    </select>
+                                    <button type="submit" class="btn-ghost"
+                                            style="padding:0.3rem 0.75rem;font-size:0.82rem">Grant</button>
+                                </form>
+                                {% endif %}
+                            </td>
+                            <td class="col-actions">
+                                {% if user['id'] != current_user['id'] %}
+                                <form method="POST"
+                                      action="{{ url_for('admin_set_user_role', id=user['id']) }}"
+                                      style="display:inline"
+                                      onsubmit="return confirm('Toggle role for {{ user['name'] or user['email'] }}?')">
+                                    <button type="submit"
+                                            class="action-link {% if user['role'] == 'power' %}action-delete{% else %}action-edit{% endif %}">
+                                        {% if user['role'] == 'power' %}Demote{% else %}Promote{% endif %}
+                                    </button>
+                                </form>
+                                {% else %}
+                                <span style="font-size:0.78rem;color:var(--ink-muted)">you</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <p class="empty-text">No users found.</p>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Invite links -->
+        <div class="dash-card" style="padding:1.75rem;margin-bottom:1.5rem">
+            <p class="profile-section-title">Create Invite Link</p>
+            <p style="font-size:0.875rem;color:var(--ink-muted);margin-bottom:1rem">
+                Generate a single-use link that adds anyone who visits it to an umbrella.
+            </p>
+            <form method="POST" action="{{ url_for('admin_create_invite') }}"
+                  style="display:flex;gap:0.75rem;align-items:flex-end;flex-wrap:wrap">
+                <div class="form-group" style="margin-bottom:0">
+                    <label class="form-group label">Umbrella</label>
+                    <select name="umbrella_id" class="form-input form-select"
+                            style="min-width:180px" required>
+                        <option value="">Select umbrella…</option>
+                        {% for umb in all_umbrellas %}
+                        <option value="{{ umb['id'] }}">{{ umb['name'] }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <button type="submit" class="btn-primary">Generate Link</button>
+            </form>
+        </div>
+
+        <!-- Invite links table -->
+        <div class="dash-card table-card">
+            <div class="table-header">
+                <h2 class="table-title">Invite Links</h2>
+            </div>
+            {% if invite_links %}
+            <div class="table-wrap">
+                <table class="expense-table">
+                    <thead>
+                        <tr>
+                            <th>Umbrella</th>
+                            <th>Created by</th>
+                            <th>Created</th>
+                            <th>Status</th>
+                            <th>Link</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for link in invite_links %}
+                        <tr>
+                            <td class="col-source">{{ link['umbrella_name'] }}</td>
+                            <td style="font-size:0.85rem">{{ link['creator_name'] }}</td>
+                            <td style="font-size:0.82rem;color:var(--ink-muted)">
+                                {{ link['created_at'][:10] }}
+                            </td>
+                            <td>
+                                {% if link['used_at'] %}
+                                <span class="status-badge status-confirmed">
+                                    Used by {{ link['claimer_name'] or '?' }}
+                                </span>
+                                {% else %}
+                                <span class="status-badge status-draft">Pending</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if not link['used_at'] %}
+                                <code class="invite-token"
+                                      id="tok-{{ link['id'] }}"
+                                      title="{{ url_for('use_invite', token=link['token'], _external=True) }}">
+                                    /invite/{{ link['token'] }}
+                                </code>
+                                <button type="button"
+                                        class="action-link"
+                                        onclick="copyInvite('tok-{{ link['id'] }}')"
+                                        title="Copy link">copy</button>
+                                {% else %}
+                                <span style="font-size:0.8rem;color:var(--ink-muted)">—</span>
+                                {% endif %}
+                            </td>
+                            <td class="col-actions">
+                                {% if not link['used_at'] %}
+                                <form method="POST"
+                                      action="{{ url_for('admin_delete_invite', id=link['id']) }}"
+                                      style="display:inline"
+                                      onsubmit="return confirm('Delete this invite link?')">
+                                    <button type="submit" class="action-link action-delete">Delete</button>
+                                </form>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <p class="empty-text">No invite links yet. Generate one above.</p>
+            </div>
+            {% endif %}
+        </div>
+
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function copyInvite(elemId) {
+    const el = document.getElementById(elemId);
+    const fullUrl = el.getAttribute('title');
+    navigator.clipboard.writeText(fullUrl).then(() => {
+        const orig = el.nextElementSibling.textContent;
+        el.nextElementSibling.textContent = 'copied!';
+        setTimeout(() => { el.nextElementSibling.textContent = orig; }, 1800);
+    });
+}
+</script>
+{% endblock %}
