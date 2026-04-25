@@ -79,6 +79,7 @@ def init_db():
         "ALTER TABLE expenses ADD COLUMN payment_method_id INTEGER REFERENCES payment_methods(id)",
         "ALTER TABLE expenses ADD COLUMN confidence_score REAL NOT NULL DEFAULT 1.0",
         "ALTER TABLE expenses ADD COLUMN status TEXT NOT NULL DEFAULT 'confirmed'",
+        "ALTER TABLE expenses ADD COLUMN dedup_hash TEXT",
     ]
     for sql in _alter_columns:
         try:
@@ -87,6 +88,12 @@ def init_db():
         except sqlite3.OperationalError:
             pass  # column already exists
 
+    # Partial unique index — NULLs (legacy rows) are excluded from the constraint
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_expenses_dedup"
+        " ON expenses(dedup_hash) WHERE dedup_hash IS NOT NULL"
+    )
+    conn.commit()
     conn.close()
 
 

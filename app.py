@@ -1,7 +1,9 @@
 import os
 import csv
+import hashlib
 import io
 import re
+import sqlite3
 from datetime import datetime
 from functools import wraps
 from zoneinfo import ZoneInfo
@@ -29,6 +31,11 @@ app.config["UPLOAD_FOLDER"] = os.path.join(os.path.dirname(__file__), "uploads")
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 
 CATEGORIES = ["Bills", "Food", "Health", "Transport", "Entertainment", "Shopping", "Other"]
+
+
+class DuplicateExpenseError(Exception):
+    pass
+
 ALLOWED_IMAGE_EXT = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
 CARD_TYPES = ["Visa", "Mastercard", "Amex", "Discover", "Other"]
 
@@ -244,6 +251,109 @@ def _parse_text_statement(text):
     return expenses[:50]
 
 
+def _llm_parse_receipt(text):
+    """LLM-based receipt parser. Falls back to regex when ANTHROPIC_API_KEY is unset."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        result = _parse_receipt_text(text)
+        result.setdefault("confidence_score", 0.7)
+        return result
+    try:
+        import anthropic, json as _json
+        client = anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=256,
+            system=[{
+                "type": "text",
+                "text": (
+                    "Extract expense data from receipt or transaction text. "
+                    "Return ONLY a JSON object with: merchant (string), "
+                    "amount (number or null), date (YYYY-MM-DD or null), "
+                    "last_four (4-digit string or null), "
+                    "category (Bills|Food|Health|Transport|Entertainment|Shopping|Other), "
+                    "confidence (float 0-1)."
+                ),
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": text[:2000]}],
+        )
+        data = _json.loads(msg.content[0].text)
+        return {
+            "description": (data.get("merchant") or "").strip()[:80],
+            "amount": f"{data['amount']:.2f}" if data.get("amount") else None,
+            "date": data.get("date") or "",
+            "last_four": data.get("last_four"),
+            "category": data.get("category", "Other"),
+            "confidence_score": float(data.get("confidence", 0.8)),
+        }
+    except Exception:
+        result = _parse_receipt_text(text)
+        result.setdefault("confidence_score", 0.7)
+        return result
+
+
+def _llm_categorize_batch(items):
+    """LLM categorization for a list of expense dicts. Adds/updates category + confidence_score."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key or not items:
+        for item in items:
+            item.setdefault("confidence_score", 0.7)
+        return items
+    try:
+        import anthropic, json as _json
+        client = anthropic.Anthropic(api_key=api_key)
+        lines = "\n".join(
+            f"{i+1}. {item.get('description', '')} ${item.get('amount', '0')}"
+            for i, item in enumerate(items)
+        )
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            system=[{
+                "type": "text",
+                "text": (
+                    "Categorize bank transactions into one of: "
+                    "Bills, Food, Health, Transport, Entertainment, Shopping, Other. "
+                    "Return ONLY a JSON array, one element per transaction in order, "
+                    "each with 'category' (string) and 'confidence' (float 0-1)."
+                ),
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": lines}],
+        )
+        results = _json.loads(msg.content[0].text)
+        for i, item in enumerate(items):
+            if i < len(results):
+                item["category"] = results[i].get("category", item.get("category", "Other"))
+                item["confidence_score"] = float(results[i].get("confidence", 0.8))
+            else:
+                item.setdefault("confidence_score", 0.8)
+    except Exception:
+        for item in items:
+            item.setdefault("confidence_score", 0.7)
+    return items
+
+
+def _parse_pdf_statement(file_bytes):
+    """Extract expenses from a PDF bank statement using pdfplumber."""
+    try:
+        import pdfplumber
+    except ImportError:
+        return []
+    text_parts = []
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            for table in (page.extract_tables() or []):
+                for row in (table or []):
+                    if row:
+                        text_parts.append("  ".join(str(c or "").strip() for c in row))
+            raw = page.extract_text()
+            if raw:
+                text_parts.append(raw)
+    return _parse_text_statement("\n".join(text_parts))
+
+
 def _build_category_tree(umbrella_id):
     from database.db import get_db, get_category_tree
     conn = get_db()
@@ -253,8 +363,13 @@ def _build_category_tree(umbrella_id):
 
 
 def _save_expense(user_id, amount, category, description, date, source, umbrella_id=None,
-                  payment_method_id=None, status='confirmed'):
+                  payment_method_id=None, status='confirmed', confidence_score=1.0):
     from database.db import get_db
+    if confidence_score < 0.85 and status == 'confirmed':
+        status = 'draft'
+    dedup_hash = hashlib.sha256(
+        f"{user_id}:{amount:.2f}:{date}:{description.lower().strip()}".encode()
+    ).hexdigest()
     conn = get_db()
     category_id = None
     if umbrella_id:
@@ -264,16 +379,20 @@ def _save_expense(user_id, amount, category, description, date, source, umbrella
         ).fetchone()
         if row:
             category_id = row["id"]
-    conn.execute(
-        "INSERT INTO expenses"
-        " (user_id, umbrella_id, category_id, payment_method_id, amount, category, description,"
-        "  date, source, status, confidence_score, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, ?)",
-        (user_id, umbrella_id, category_id, payment_method_id, amount, category, description,
-         date, source, status, datetime.now(PACIFIC).isoformat()),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            "INSERT INTO expenses"
+            " (user_id, umbrella_id, category_id, payment_method_id, amount, category, description,"
+            "  date, source, status, confidence_score, dedup_hash, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, umbrella_id, category_id, payment_method_id, amount, category, description,
+             date, source, status, confidence_score, dedup_hash, datetime.now(PACIFIC).isoformat()),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise DuplicateExpenseError(f"{description} ${amount:.2f} on {date}")
+    finally:
+        conn.close()
 
 
 # ------------------------------------------------------------------ #
@@ -551,6 +670,8 @@ def add_expense():
                           payment_method_id=payment_method_id,
                           status=status)
             flash(f"${amount:.2f} expense added.", "success")
+        except DuplicateExpenseError:
+            flash("Duplicate — this expense already exists and was not added.", "warning")
         except Exception as e:
             flash(f"Could not save expense: {e}", "error")
         return redirect(url_for("add_expense"))
@@ -584,7 +705,7 @@ def add_expense_photo():
         import pytesseract
         from PIL import Image
         text = pytesseract.image_to_string(Image.open(filepath))
-        extracted = _parse_receipt_text(text)
+        extracted = _llm_parse_receipt(text)
         last_four = extracted.get("last_four")
         if last_four:
             pm_id = _match_payment_method(last_four, g.active_umbrella_id)
@@ -604,12 +725,17 @@ def add_expense_photo():
 @login_required
 def add_expense_statement():
     if "csv_file" in request.files and request.files["csv_file"].filename:
-        content = request.files["csv_file"].read().decode("utf-8", errors="ignore")
-        expenses = _parse_csv_statement(content)
+        f = request.files["csv_file"]
+        if f.filename.lower().endswith(".pdf"):
+            expenses = _parse_pdf_statement(f.read())
+        else:
+            expenses = _parse_csv_statement(f.read().decode("utf-8", errors="ignore"))
     elif request.form.get("paste_text", "").strip():
         expenses = _parse_text_statement(request.form["paste_text"])
     else:
         return jsonify({"error": "No file or text provided"}), 400
+    if expenses:
+        expenses = _llm_categorize_batch(expenses)
     return jsonify({"expenses": expenses})
 
 
@@ -621,26 +747,30 @@ def add_expense_bulk():
     if not expenses:
         return jsonify({"error": "No expenses provided"}), 400
     saved = 0
+    skipped = 0
     try:
         for exp in expenses:
             last_four = exp.get("last_four") or None
             pm_id = _match_payment_method(last_four, g.active_umbrella_id) if last_four else None
             status = 'draft' if last_four and pm_id is None else 'confirmed'
-            _save_expense(
-                session["user_id"],
-                float(exp["amount"]),
-                exp.get("category", "Other"),
-                exp.get("description", ""),
-                exp.get("date", datetime.now(PACIFIC).strftime("%Y-%m-%d")),
-                "statement",
-                umbrella_id=g.active_umbrella_id,
-                payment_method_id=pm_id,
-                status=status,
-            )
-            saved += 1
+            try:
+                _save_expense(
+                    session["user_id"],
+                    float(exp["amount"]),
+                    exp.get("category", "Other"),
+                    exp.get("description", ""),
+                    exp.get("date", datetime.now(PACIFIC).strftime("%Y-%m-%d")),
+                    "statement",
+                    umbrella_id=g.active_umbrella_id,
+                    payment_method_id=pm_id,
+                    status=status,
+                )
+                saved += 1
+            except DuplicateExpenseError:
+                skipped += 1
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    return jsonify({"saved": saved})
+    return jsonify({"saved": saved, "skipped": skipped})
 
 
 # ------------------------------------------------------------------ #

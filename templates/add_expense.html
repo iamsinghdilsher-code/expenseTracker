@@ -33,7 +33,7 @@
             <button class="method-card" data-method="statement">
                 <div class="method-icon">📄</div>
                 <div class="method-label">From Statement</div>
-                <div class="method-desc">CSV or pasted email</div>
+                <div class="method-desc">CSV, PDF, or pasted text</div>
             </button>
         </div>
 
@@ -146,11 +146,11 @@
             <!-- CSV upload -->
             <div id="stab-csv">
                 <div class="upload-zone upload-zone-sm" id="csv-drop-zone">
-                    <input type="file" id="csv-input" accept=".csv,text/csv" style="display:none">
+                    <input type="file" id="csv-input" accept=".csv,.pdf,text/csv,application/pdf" style="display:none">
                     <div class="upload-icon" style="font-size:1.5rem">📊</div>
-                    <p class="upload-label">Drop your bank CSV export here</p>
+                    <p class="upload-label">Drop your bank CSV or PDF statement here</p>
                     <p class="upload-hint">or <button type="button" class="upload-browse" id="csv-browse">browse files</button></p>
-                    <p class="upload-formats">Works with Chase, Wells Fargo, BofA and most US banks</p>
+                    <p class="upload-formats">CSV or PDF — Chase, Wells Fargo, BofA and most US banks</p>
                 </div>
             </div>
 
@@ -391,9 +391,11 @@ document.getElementById('import-btn').addEventListener('click', () => {
         .then(data => {
             const status = document.getElementById('import-status');
             status.style.display = 'block';
-            if (data.saved) {
+            if (data.saved !== undefined) {
                 status.className = 'import-status import-ok';
-                status.textContent = `${data.saved} expense${data.saved !== 1 ? 's' : ''} imported successfully.`;
+                let msg = `${data.saved} expense${data.saved !== 1 ? 's' : ''} imported.`;
+                if (data.skipped) msg += ` ${data.skipped} duplicate${data.skipped !== 1 ? 's' : ''} skipped.`;
+                status.textContent = msg;
                 document.getElementById('stmt-results').style.display = 'none';
             } else {
                 status.className = 'import-status import-error';
