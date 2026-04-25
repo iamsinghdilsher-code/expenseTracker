@@ -3,7 +3,10 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'expense_tracker.db')
+DB_PATH = os.environ.get(
+    "DATABASE_PATH",
+    os.path.join(os.path.dirname(__file__), '..', 'expense_tracker.db')
+)
 PACIFIC = ZoneInfo("America/Los_Angeles")
 
 DEFAULT_CATEGORIES = [

@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: spendly
+    env: python
+    buildCommand: "./build.sh"
+    startCommand: "gunicorn wsgi:app"
+    disk:
+      name: spendly-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: DATABASE_PATH
+        value: /data/expense_tracker.db
+      - key: UPLOAD_FOLDER
+        value: /data/uploads
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ANTHROPIC_API_KEY
+        sync: false          # you paste this in the Render dashboard
+      - key: WEBHOOK_SECRET
+        sync: false          # you paste this in the Render dashboard

@@ -27,8 +27,16 @@ if os.name == "nt" and os.path.isfile(_TESSERACT_WIN):
 
 app = Flask(__name__)
 app.config["TIMEZONE"] = "America/Los_Angeles"
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-change-in-prod")
-app.config["UPLOAD_FOLDER"] = os.path.join(os.path.dirname(__file__), "uploads")
+_secret_key = os.environ.get("SECRET_KEY")
+if not _secret_key:
+    if os.environ.get("FLASK_ENV") == "production":
+        raise RuntimeError("SECRET_KEY environment variable must be set in production")
+    _secret_key = "dev-secret-change-in-prod"
+app.config["SECRET_KEY"] = _secret_key
+app.config["UPLOAD_FOLDER"] = os.environ.get(
+    "UPLOAD_FOLDER",
+    os.path.join(os.path.dirname(__file__), "uploads")
+)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 
 CATEGORIES = ["Bills", "Food", "Health", "Transport", "Entertainment", "Shopping", "Other"]
@@ -1780,7 +1788,8 @@ def admin_audit():
     )
 
 
+from database.db import init_db
+init_db()
+
 if __name__ == "__main__":
-    from database.db import init_db
-    init_db()
-    app.run(debug=True, port=5001)
+    app.run(debug=os.environ.get("FLASK_ENV") != "production", port=5001)
