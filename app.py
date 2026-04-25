@@ -30,6 +30,7 @@ app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 
 CATEGORIES = ["Bills", "Food", "Health", "Transport", "Entertainment", "Shopping", "Other"]
 ALLOWED_IMAGE_EXT = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
+CARD_TYPES = ["Visa", "Mastercard", "Amex", "Discover", "Other"]
 
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
@@ -130,6 +131,35 @@ def _detect_category(description):
     return "Other"
 
 
+def _extract_last_four(text):
+    """Extract card last-4 digits from text (OCR output or transaction description)."""
+    if not text:
+        return None
+    for pat in [
+        r'(?:x{2,4}|[*]{2,4})[-\s]?(\d{4})\b',
+        r'ending\s+(?:in\s+)?(\d{4})\b',
+        r'\b[xX]{4}(\d{4})\b',
+    ]:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _match_payment_method(last_four, umbrella_id):
+    """Return payment_method id if last_four matches a registered card in the umbrella."""
+    if not last_four or not umbrella_id:
+        return None
+    from database.db import get_db
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id FROM payment_methods WHERE last_four = ? AND umbrella_id = ?",
+        (last_four, umbrella_id),
+    ).fetchone()
+    conn.close()
+    return row["id"] if row else None
+
+
 def _parse_receipt_text(text):
     result = {}
     amount_match = re.search(
@@ -152,6 +182,7 @@ def _parse_receipt_text(text):
         if lines:
             result["description"] = lines[0][:80]
     result["category"] = _detect_category(result.get("description", ""))
+    result["last_four"] = _extract_last_four(text)
     return result
 
 
@@ -169,6 +200,10 @@ def _parse_csv_statement(content):
             (h for h in fieldnames if any(k in h.lower() for k in ["amount", "debit", "charge"])),
             None,
         )
+        card_col = next(
+            (h for h in fieldnames if any(k in h.lower() for k in ["card", "last four", "last 4", "last4", "account"])),
+            None,
+        )
         for row in reader:
             try:
                 raw = row.get(amt_col, "0").replace("$", "").replace(",", "").strip() if amt_col else "0"
@@ -176,11 +211,13 @@ def _parse_csv_statement(content):
                 if amount <= 0:
                     continue
                 desc = row.get(desc_col, "").strip()[:80] if desc_col else ""
+                raw_card = row.get(card_col, "").strip() if card_col else ""
                 expenses.append({
                     "date": row.get(date_col, "").strip() if date_col else "",
                     "description": desc,
                     "amount": f"{amount:.2f}",
                     "category": _detect_category(desc),
+                    "last_four": _extract_last_four(raw_card) or _extract_last_four(desc),
                 })
             except (ValueError, TypeError):
                 continue
@@ -202,6 +239,7 @@ def _parse_text_statement(text):
             "description": desc,
             "amount": m.group(3),
             "category": _detect_category(desc),
+            "last_four": _extract_last_four(desc),
         })
     return expenses[:50]
 
@@ -214,7 +252,8 @@ def _build_category_tree(umbrella_id):
     return tree
 
 
-def _save_expense(user_id, amount, category, description, date, source, umbrella_id=None):
+def _save_expense(user_id, amount, category, description, date, source, umbrella_id=None,
+                  payment_method_id=None, status='confirmed'):
     from database.db import get_db
     conn = get_db()
     category_id = None
@@ -227,11 +266,11 @@ def _save_expense(user_id, amount, category, description, date, source, umbrella
             category_id = row["id"]
     conn.execute(
         "INSERT INTO expenses"
-        " (user_id, umbrella_id, category_id, amount, category, description,"
+        " (user_id, umbrella_id, category_id, payment_method_id, amount, category, description,"
         "  date, source, status, confidence_score, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', 1.0, ?)",
-        (user_id, umbrella_id, category_id, amount, category, description,
-         date, source, datetime.now(PACIFIC).isoformat()),
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, ?)",
+        (user_id, umbrella_id, category_id, payment_method_id, amount, category, description,
+         date, source, status, datetime.now(PACIFIC).isoformat()),
     )
     conn.commit()
     conn.close()
@@ -495,6 +534,8 @@ def add_expense():
         description = request.form.get("description", "").strip()
         date = request.form.get("date", "").strip()
         source = request.form.get("source", "manual")
+        raw_pm = request.form.get("payment_method_id", "").strip()
+        last_four_detected = request.form.get("last_four_detected", "").strip()
         try:
             amount = float(raw_amount)
         except ValueError:
@@ -502,16 +543,29 @@ def add_expense():
             return redirect(url_for("add_expense"))
         if not date:
             date = datetime.now(PACIFIC).strftime("%Y-%m-%d")
+        payment_method_id = int(raw_pm) if raw_pm.isdigit() else None
+        status = 'draft' if source == 'photo' and last_four_detected and not payment_method_id else 'confirmed'
         try:
             _save_expense(session["user_id"], amount, category, description, date, source,
-                          umbrella_id=g.active_umbrella_id)
+                          umbrella_id=g.active_umbrella_id,
+                          payment_method_id=payment_method_id,
+                          status=status)
             flash(f"${amount:.2f} expense added.", "success")
         except Exception as e:
             flash(f"Could not save expense: {e}", "error")
         return redirect(url_for("add_expense"))
+    from database.db import get_db
     today = datetime.now(PACIFIC).strftime("%Y-%m-%d")
     category_tree = _build_category_tree(g.active_umbrella_id) if g.active_umbrella_id else []
-    return render_template("add_expense.html", category_tree=category_tree, today=today)
+    conn = get_db()
+    pms = conn.execute(
+        "SELECT id, last_four, bank_name, card_type FROM payment_methods"
+        " WHERE umbrella_id = ? ORDER BY bank_name, last_four",
+        (g.active_umbrella_id,),
+    ).fetchall() if g.active_umbrella_id else []
+    conn.close()
+    return render_template("add_expense.html", category_tree=category_tree, today=today,
+                           payment_methods=pms)
 
 
 @app.route("/expenses/add/photo", methods=["POST"])
@@ -531,6 +585,14 @@ def add_expense_photo():
         from PIL import Image
         text = pytesseract.image_to_string(Image.open(filepath))
         extracted = _parse_receipt_text(text)
+        last_four = extracted.get("last_four")
+        if last_four:
+            pm_id = _match_payment_method(last_four, g.active_umbrella_id)
+            extracted["payment_method_id"] = pm_id
+            extracted["is_draft"] = pm_id is None
+        else:
+            extracted["payment_method_id"] = None
+            extracted["is_draft"] = False
     except ImportError:
         extracted = {"ocr_unavailable": True}
     except Exception as e:
@@ -561,6 +623,9 @@ def add_expense_bulk():
     saved = 0
     try:
         for exp in expenses:
+            last_four = exp.get("last_four") or None
+            pm_id = _match_payment_method(last_four, g.active_umbrella_id) if last_four else None
+            status = 'draft' if last_four and pm_id is None else 'confirmed'
             _save_expense(
                 session["user_id"],
                 float(exp["amount"]),
@@ -569,6 +634,8 @@ def add_expense_bulk():
                 exp.get("date", datetime.now(PACIFIC).strftime("%Y-%m-%d")),
                 "statement",
                 umbrella_id=g.active_umbrella_id,
+                payment_method_id=pm_id,
+                status=status,
             )
             saved += 1
     except Exception as e:
@@ -702,6 +769,106 @@ def export_expenses():
         mimetype="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+# ------------------------------------------------------------------ #
+# Payment methods                                                     #
+# ------------------------------------------------------------------ #
+
+@app.route("/payment-methods")
+@umbrella_required
+def payment_methods():
+    from database.db import get_db
+    conn = get_db()
+    pms = conn.execute(
+        "SELECT pm.id, pm.last_four, pm.bank_name, pm.card_type, u.name AS owner_name"
+        " FROM payment_methods pm"
+        " JOIN users u ON u.id = pm.user_id"
+        " WHERE pm.umbrella_id = ?"
+        " ORDER BY pm.bank_name, pm.last_four",
+        (g.active_umbrella_id,),
+    ).fetchall()
+    conn.close()
+    return render_template("payment_methods.html", payment_methods=pms, card_types=CARD_TYPES)
+
+
+@app.route("/payment-methods/add", methods=["POST"])
+@umbrella_required
+def add_payment_method():
+    last_four = request.form.get("last_four", "").strip()
+    bank_name = request.form.get("bank_name", "").strip()
+    card_type = request.form.get("card_type", "Other").strip()
+    if not last_four or not last_four.isdigit() or len(last_four) != 4:
+        flash("Last four digits must be exactly 4 numbers.", "error")
+        return redirect(url_for("payment_methods"))
+    from database.db import get_db
+    conn = get_db()
+    if conn.execute(
+        "SELECT id FROM payment_methods WHERE last_four = ? AND umbrella_id = ?",
+        (last_four, g.active_umbrella_id),
+    ).fetchone():
+        conn.close()
+        flash(f"A card ending in {last_four} is already registered.", "error")
+        return redirect(url_for("payment_methods"))
+    conn.execute(
+        "INSERT INTO payment_methods (last_four, bank_name, card_type, user_id, umbrella_id, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (last_four, bank_name, card_type, session["user_id"], g.active_umbrella_id,
+         datetime.now(PACIFIC).isoformat()),
+    )
+    conn.commit()
+    conn.close()
+    flash(f"Card ending in {last_four} added.", "success")
+    return redirect(url_for("payment_methods"))
+
+
+@app.route("/payment-methods/<int:id>/edit", methods=["GET", "POST"])
+@umbrella_required
+def edit_payment_method(id):
+    from database.db import get_db
+    conn = get_db()
+    pm = conn.execute(
+        "SELECT * FROM payment_methods WHERE id = ? AND umbrella_id = ?",
+        (id, g.active_umbrella_id),
+    ).fetchone()
+    if not pm:
+        conn.close()
+        flash("Payment method not found.", "error")
+        return redirect(url_for("payment_methods"))
+    if request.method == "POST":
+        last_four = request.form.get("last_four", "").strip()
+        bank_name = request.form.get("bank_name", "").strip()
+        card_type = request.form.get("card_type", "Other").strip()
+        if not last_four or not last_four.isdigit() or len(last_four) != 4:
+            conn.close()
+            return render_template("edit_payment_method.html", pm=pm, card_types=CARD_TYPES,
+                                   error="Last four digits must be exactly 4 numbers.")
+        conn.execute(
+            "UPDATE payment_methods SET last_four=?, bank_name=?, card_type=?"
+            " WHERE id=? AND umbrella_id=?",
+            (last_four, bank_name, card_type, id, g.active_umbrella_id),
+        )
+        conn.commit()
+        conn.close()
+        flash("Card updated.", "success")
+        return redirect(url_for("payment_methods"))
+    conn.close()
+    return render_template("edit_payment_method.html", pm=pm, card_types=CARD_TYPES)
+
+
+@app.route("/payment-methods/<int:id>/delete", methods=["POST"])
+@umbrella_required
+def delete_payment_method(id):
+    from database.db import get_db
+    conn = get_db()
+    conn.execute(
+        "DELETE FROM payment_methods WHERE id = ? AND umbrella_id = ?",
+        (id, g.active_umbrella_id),
+    )
+    conn.commit()
+    conn.close()
+    flash("Card removed.", "success")
+    return redirect(url_for("payment_methods"))
 
 
 if __name__ == "__main__":

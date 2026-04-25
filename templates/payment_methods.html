@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{% block title %}Payment Methods — Spendly{% endblock %}
+
+{% block content %}
+<section class="add-section">
+    <div class="add-inner">
+
+        <div class="add-header">
+            <h1 class="add-title">Payment Methods</h1>
+            <p class="add-subtitle"><a href="{{ url_for('expenses') }}" class="back-link">&#8592; Back to dashboard</a></p>
+        </div>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}
+                <div class="flash flash-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endwith %}
+
+        <!-- Registered cards -->
+        <div class="method-panel" style="margin-bottom:1.5rem">
+            <h2 class="profile-section-title">Registered cards</h2>
+            <p style="font-size:0.85rem;color:var(--text-muted,#666);margin-bottom:1rem">
+                Cards registered here are matched automatically when receipts or statements are imported.
+                Expenses with an unrecognized card are saved as drafts for review.
+            </p>
+            {% if payment_methods %}
+            <div class="table-wrap">
+                <table class="expense-table">
+                    <thead>
+                        <tr>
+                            <th>Card</th>
+                            <th>Bank</th>
+                            <th>Type</th>
+                            <th>Owner</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for pm in payment_methods %}
+                        <tr>
+                            <td class="col-desc" style="font-family:monospace">&#8226;&#8226;&#8226;&#8226;&nbsp;{{ pm['last_four'] }}</td>
+                            <td>{{ pm['bank_name'] or '&#8212;' }}</td>
+                            <td>{{ pm['card_type'] or '&#8212;' }}</td>
+                            <td>{{ pm['owner_name'] }}</td>
+                            <td class="col-actions">
+                                <a href="{{ url_for('edit_payment_method', id=pm['id']) }}" class="action-link">Edit</a>
+                                <form method="POST" action="{{ url_for('delete_payment_method', id=pm['id']) }}"
+                                      onsubmit="return confirm('Remove this card?')" style="display:inline">
+                                    <button type="submit" class="action-link action-delete">Remove</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <p class="empty-text">No cards registered yet. Add one below.</p>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Add card -->
+        <div class="method-panel">
+            <h2 class="profile-section-title">Add a card</h2>
+            <form method="POST" action="{{ url_for('add_payment_method') }}" class="expense-form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="last_four">Last 4 digits</label>
+                        <input id="last_four" class="form-input" type="text" name="last_four"
+                               maxlength="4" pattern="\d{4}" placeholder="1234" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="bank_name">Bank <span class="form-optional">(optional)</span></label>
+                        <input id="bank_name" class="form-input" type="text" name="bank_name"
+                               placeholder="e.g. Chase">
+                    </div>
+                    <div class="form-group">
+                        <label for="card_type">Card type</label>
+                        <select id="card_type" class="form-input form-select" name="card_type">
+                            {% for ct in card_types %}
+                                <option value="{{ ct }}">{{ ct }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+                <button type="submit" class="btn-submit">Add card</button>
+            </form>
+        </div>
+
+    </div>
+</section>
+{% endblock %}

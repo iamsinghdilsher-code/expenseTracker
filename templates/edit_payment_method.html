@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Card — Spendly{% endblock %}
+
+{% block content %}
+<section class="add-section">
+    <div class="add-inner">
+
+        <div class="add-header">
+            <h1 class="add-title">Edit Card</h1>
+            <p class="add-subtitle"><a href="{{ url_for('payment_methods') }}" class="back-link">&#8592; Back to payment methods</a></p>
+        </div>
+
+        <div class="method-panel">
+            {% if error %}
+            <div class="flash flash-error">{{ error }}</div>
+            {% endif %}
+
+            <form method="POST" action="{{ url_for('edit_payment_method', id=pm['id']) }}" class="expense-form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="last_four">Last 4 digits</label>
+                        <input id="last_four" class="form-input" type="text" name="last_four"
+                               maxlength="4" pattern="\d{4}" value="{{ pm['last_four'] }}" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="bank_name">Bank <span class="form-optional">(optional)</span></label>
+                        <input id="bank_name" class="form-input" type="text" name="bank_name"
+                               value="{{ pm['bank_name'] }}" placeholder="e.g. Chase">
+                    </div>
+                    <div class="form-group">
+                        <label for="card_type">Card type</label>
+                        <select id="card_type" class="form-input form-select" name="card_type">
+                            {% for ct in card_types %}
+                                <option value="{{ ct }}" {{ 'selected' if ct == pm['card_type'] }}>{{ ct }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+                <button type="submit" class="btn-submit">Save changes</button>
+            </form>
+        </div>
+
+    </div>
+</section>
+{% endblock %}
