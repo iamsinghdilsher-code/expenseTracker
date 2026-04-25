@@ -7,7 +7,10 @@
       "Bash(python -c \"from database.db import init_db; init_db\\(\\); print\\('DB init OK'\\)\")",
       "Bash(python -c \"import app; print\\('app.py import OK'\\)\")",
       "Bash(python -m pytest --tb=short -q)",
-      "Bash(chmod +x *)"
+      "Bash(chmod +x *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
     ]
   }
 }
