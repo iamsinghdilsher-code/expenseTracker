@@ -23,6 +23,9 @@
                     <a href="{{ url_for('expenses') }}">Dashboard</a>
                     <a href="{{ url_for('add_expense') }}">Add Expense</a>
                     <a href="{{ url_for('payment_methods') }}">Cards</a>
+                    {% if current_user['role'] == 'power' %}
+                    <a href="{{ url_for('admin_dashboard') }}">Admin</a>
+                    {% endif %}
                     <a href="{{ url_for('profile') }}">{{ current_user['name'] or 'Profile' }}</a>
                     <a href="{{ url_for('logout') }}" class="nav-cta">Sign out</a>
                 {% else %}

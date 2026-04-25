@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block title %}Budgets — Spendly Admin{% endblock %}
+
+{% block content %}
+<section class="dash-section">
+    <div class="admin-inner">
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}
+                <div class="flash flash-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endwith %}
+
+        <!-- Header -->
+        <div class="dash-header">
+            <div>
+                <h1 class="dash-title">Budgets</h1>
+                <p class="dash-subtitle">Set monthly spending limits per umbrella and category.</p>
+            </div>
+            <a href="{{ url_for('admin_dashboard', month=month) }}" class="btn-ghost">&#8592; Admin Dashboard</a>
+        </div>
+
+        <!-- Month nav -->
+        <div class="month-nav">
+            <a href="{{ url_for('admin_budgets', month=prev_month) }}" class="month-arrow">&#8592;</a>
+            <span class="month-label">{{ month_label }}</span>
+            <a href="{{ url_for('admin_budgets', month=next_month) }}" class="month-arrow">&#8594;</a>
+        </div>
+
+        <!-- Set budget form -->
+        <div class="dash-card" style="margin-bottom:1.25rem; padding:1.75rem">
+            <p class="profile-section-title">Set a Budget for {{ month_label }}</p>
+            <form method="POST" action="{{ url_for('admin_set_budget') }}" class="budget-form">
+                <input type="hidden" name="month" value="{{ month }}">
+                <div class="budget-form-row">
+                    <div class="form-group">
+                        <label class="form-group label">Umbrella</label>
+                        <select name="umbrella_id" class="form-input form-select" required>
+                            <option value="">Select umbrella…</option>
+                            {% for umb in umbrellas %}
+                            <option value="{{ umb['id'] }}">{{ umb['name'] }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-group label">Category</label>
+                        <select name="category" class="form-input form-select" required>
+                            <option value="">Select category…</option>
+                            {% for cat in categories %}
+                            <option value="{{ cat }}">{{ cat }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-group label">Monthly Budget ($)</label>
+                        <input type="number" name="amount" class="form-input"
+                               min="0.01" step="0.01" placeholder="e.g. 300.00" required>
+                    </div>
+                    <div class="form-group" style="display:flex;align-items:flex-end">
+                        <button type="submit" class="btn-primary" style="width:100%">Set Budget</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+
+        <!-- Budget table -->
+        <div class="dash-card table-card">
+            <div class="table-header">
+                <h2 class="table-title">Budgets for {{ month_label }}</h2>
+            </div>
+            {% if budget_rows %}
+            <div class="table-wrap">
+                <table class="expense-table">
+                    <thead>
+                        <tr>
+                            <th>Umbrella</th>
+                            <th>Category</th>
+                            <th>Budget</th>
+                            <th>Actual</th>
+                            <th>Remaining</th>
+                            <th>Usage</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for b in budget_rows %}
+                        {% set pct = ((b['actual'] / b['amount'] * 100)|int) if b['amount'] > 0 else 0 %}
+                        {% set pct_capped = [pct, 100]|min %}
+                        {% set remaining = b['amount'] - b['actual'] %}
+                        <tr>
+                            <td class="col-source">{{ b['umbrella_name'] }}</td>
+                            <td><span class="cat-badge cat-{{ b['category']|lower }}">{{ b['category'] }}</span></td>
+                            <td>${{ "%.2f"|format(b['amount']) }}</td>
+                            <td class="col-amount {% if b['actual'] > b['amount'] %}text-danger{% endif %}">
+                                ${{ "%.2f"|format(b['actual']) }}
+                            </td>
+                            <td class="col-amount {% if remaining < 0 %}text-danger{% endif %}">
+                                {% if remaining >= 0 %}${{ "%.2f"|format(remaining) }}{% else %}-${{ "%.2f"|format(remaining|abs) }}{% endif %}
+                            </td>
+                            <td style="min-width:140px">
+                                <div style="display:flex;align-items:center;gap:0.5rem">
+                                    <div class="budget-progress" style="flex:1">
+                                        <div class="budget-progress-bar {% if pct > 100 %}budget-progress-over{% endif %}"
+                                             style="width:{{ pct_capped }}%"></div>
+                                    </div>
+                                    <span style="font-size:0.75rem;color:var(--ink-muted);white-space:nowrap">{{ pct }}%</span>
+                                </div>
+                            </td>
+                            <td class="col-actions">
+                                <form method="POST"
+                                      action="{{ url_for('admin_delete_budget', id=b['id']) }}"
+                                      onsubmit="return confirm('Remove this budget?')"
+                                      style="display:inline">
+                                    <button type="submit" class="action-link action-delete">Remove</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <p class="empty-text">No budgets set for {{ month_label }}. Use the form above to add one.</p>
+            </div>
+            {% endif %}
+        </div>
+
+    </div>
+</section>
+{% endblock %}

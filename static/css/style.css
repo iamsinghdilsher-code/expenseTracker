@@ -1296,3 +1296,113 @@ a { color: inherit; text-decoration: none; }
     .dash-header { flex-direction: column; gap: 1rem; }
     .profile-stats { grid-template-columns: 1fr; }
 }
+
+/* ------------------------------------------------------------------ */
+/* Admin Dashboard                                                     */
+/* ------------------------------------------------------------------ */
+
+.admin-inner {
+    max-width: 1100px;
+    margin: 0 auto;
+}
+
+.admin-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.stat-card-admin {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.stat-card-warn {
+    border-color: var(--accent-2);
+    background: var(--accent-2-light);
+}
+
+.stat-card-warn .summary-label { color: var(--accent-2); }
+.stat-card-warn .summary-amount { color: var(--accent-2); }
+
+.admin-chart-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.25rem;
+    margin-bottom: 1.25rem;
+}
+
+.admin-chart-card {
+    padding: 1.5rem;
+    min-height: 220px;
+    display: flex;
+    flex-direction: column;
+}
+
+.admin-chart-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--ink-muted);
+    margin-bottom: 1rem;
+}
+
+/* Draft badge next to heading */
+.badge-count {
+    display: inline-block;
+    background: var(--accent-2);
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    margin-left: 0.5rem;
+    vertical-align: middle;
+}
+
+/* Budget progress bars */
+.budget-progress {
+    height: 7px;
+    background: var(--border-soft);
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.budget-progress-bar {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 999px;
+    transition: width 0.4s ease;
+}
+
+.budget-progress-over { background: var(--danger); }
+
+.text-danger { color: var(--danger) !important; }
+
+/* Budget set form */
+.budget-form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr auto;
+    gap: 1rem;
+    align-items: start;
+}
+
+.flash-warning {
+    background: var(--accent-2-light);
+    color: var(--accent-2);
+    border: 1px solid #f0d49a;
+}
+
+@media (max-width: 900px) {
+    .admin-stats { grid-template-columns: repeat(2, 1fr); }
+    .admin-chart-grid { grid-template-columns: 1fr; }
+    .budget-form-row { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 600px) {
+    .admin-stats { grid-template-columns: 1fr 1fr; }
+    .budget-form-row { grid-template-columns: 1fr; }
+}

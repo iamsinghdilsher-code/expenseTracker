@@ -68,6 +68,15 @@ def init_db():
             source TEXT NOT NULL DEFAULT 'manual',
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS budgets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            umbrella_id INTEGER NOT NULL REFERENCES umbrellas(id),
+            category TEXT NOT NULL,
+            month TEXT NOT NULL,
+            amount REAL NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(umbrella_id, category, month)
+        );
     """)
 
     # Column migrations — each wrapped individually so one failure doesn't block the rest

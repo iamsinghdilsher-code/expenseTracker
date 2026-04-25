@@ -56,6 +56,20 @@ def login_required(f):
     return decorated
 
 
+def power_required(f):
+    """Requires a logged-in Power User."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if "user_id" not in session:
+            flash("Please sign in to continue.", "error")
+            return redirect(url_for("login"))
+        if not g.user or g.user["role"] != "power":
+            flash("Power User access required.", "error")
+            return redirect(url_for("expenses"))
+        return f(*args, **kwargs)
+    return decorated
+
+
 def umbrella_required(f):
     """Requires both a valid session and an active umbrella context."""
     @wraps(f)
@@ -782,9 +796,13 @@ def add_expense_bulk():
 def edit_expense(id):
     from database.db import get_db
     conn = get_db()
-    expense = conn.execute(
-        "SELECT * FROM expenses WHERE id = ? AND user_id = ?", (id, session["user_id"])
-    ).fetchone()
+    is_power = g.user and g.user["role"] == "power"
+    if is_power:
+        expense = conn.execute("SELECT * FROM expenses WHERE id = ?", (id,)).fetchone()
+    else:
+        expense = conn.execute(
+            "SELECT * FROM expenses WHERE id = ? AND user_id = ?", (id, session["user_id"])
+        ).fetchone()
     if not expense:
         conn.close()
         flash("Expense not found.", "error")
@@ -807,11 +825,18 @@ def edit_expense(id):
             (category, expense["umbrella_id"]),
         ).fetchone()
         category_id = cat_row["id"] if cat_row else expense["category_id"]
-        conn.execute(
-            "UPDATE expenses SET amount=?, category=?, category_id=?, description=?, date=?"
-            " WHERE id=? AND user_id=?",
-            (amount, category, category_id, description, date, id, session["user_id"]),
-        )
+        if is_power:
+            conn.execute(
+                "UPDATE expenses SET amount=?, category=?, category_id=?, description=?, date=?"
+                " WHERE id=?",
+                (amount, category, category_id, description, date, id),
+            )
+        else:
+            conn.execute(
+                "UPDATE expenses SET amount=?, category=?, category_id=?, description=?, date=?"
+                " WHERE id=? AND user_id=?",
+                (amount, category, category_id, description, date, id, session["user_id"]),
+            )
         conn.commit()
         conn.close()
         flash("Expense updated.", "success")
@@ -827,9 +852,13 @@ def edit_expense(id):
 def delete_expense(id):
     from database.db import get_db
     conn = get_db()
-    conn.execute(
-        "DELETE FROM expenses WHERE id = ? AND user_id = ?", (id, session["user_id"])
-    )
+    is_power = g.user and g.user["role"] == "power"
+    if is_power:
+        conn.execute("DELETE FROM expenses WHERE id = ?", (id,))
+    else:
+        conn.execute(
+            "DELETE FROM expenses WHERE id = ? AND user_id = ?", (id, session["user_id"])
+        )
     conn.commit()
     conn.close()
     flash("Expense deleted.", "success")
@@ -999,6 +1028,233 @@ def delete_payment_method(id):
     conn.close()
     flash("Card removed.", "success")
     return redirect(url_for("payment_methods"))
+
+
+# ------------------------------------------------------------------ #
+# Admin — Power User Dashboard                                        #
+# ------------------------------------------------------------------ #
+
+@app.route("/admin")
+@power_required
+def admin_dashboard():
+    from database.db import get_db
+    now = datetime.now(PACIFIC)
+    month = request.args.get("month", now.strftime("%Y-%m"))
+    try:
+        datetime.strptime(month, "%Y-%m")
+    except ValueError:
+        month = now.strftime("%Y-%m")
+
+    conn = get_db()
+
+    total_month = conn.execute(
+        "SELECT COALESCE(SUM(amount), 0) as t FROM expenses"
+        " WHERE strftime('%Y-%m', date) = ?", (month,)
+    ).fetchone()["t"]
+    draft_count = conn.execute(
+        "SELECT COUNT(*) as c FROM expenses WHERE status = 'draft'"
+    ).fetchone()["c"]
+    user_count = conn.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
+    umbrella_count = conn.execute("SELECT COUNT(*) as c FROM umbrellas").fetchone()["c"]
+
+    umb_rows = conn.execute(
+        "SELECT u.name, COALESCE(SUM(e.amount), 0) as total"
+        " FROM umbrellas u"
+        " LEFT JOIN expenses e ON e.umbrella_id = u.id"
+        "   AND strftime('%Y-%m', e.date) = ?"
+        " GROUP BY u.id, u.name ORDER BY total DESC",
+        (month,),
+    ).fetchall()
+
+    cat_rows = conn.execute(
+        "SELECT category, COALESCE(SUM(amount), 0) as total"
+        " FROM expenses WHERE strftime('%Y-%m', date) = ?"
+        " GROUP BY category ORDER BY total DESC",
+        (month,),
+    ).fetchall()
+
+    user_rows = conn.execute(
+        "SELECT u.name, COALESCE(SUM(e.amount), 0) as total"
+        " FROM users u"
+        " LEFT JOIN expenses e ON e.user_id = u.id"
+        "   AND strftime('%Y-%m', e.date) = ?"
+        " GROUP BY u.id, u.name ORDER BY total DESC LIMIT 10",
+        (month,),
+    ).fetchall()
+
+    trend_rows = conn.execute(
+        "SELECT strftime('%Y-%m', date) as m, SUM(amount) as total"
+        " FROM expenses GROUP BY m ORDER BY m DESC LIMIT 6"
+    ).fetchall()
+    trend_rows = list(reversed(trend_rows))
+
+    drafts = conn.execute(
+        "SELECT e.*, u.name as user_name, umb.name as umbrella_name"
+        " FROM expenses e"
+        " JOIN users u ON u.id = e.user_id"
+        " LEFT JOIN umbrellas umb ON umb.id = e.umbrella_id"
+        " WHERE e.status = 'draft'"
+        " ORDER BY e.created_at DESC"
+    ).fetchall()
+
+    budget_rows = conn.execute(
+        "SELECT b.*, umb.name as umbrella_name,"
+        " COALESCE((SELECT SUM(e.amount) FROM expenses e"
+        "           WHERE e.umbrella_id = b.umbrella_id"
+        "           AND e.category = b.category"
+        "           AND strftime('%Y-%m', e.date) = b.month), 0) as actual"
+        " FROM budgets b"
+        " JOIN umbrellas umb ON umb.id = b.umbrella_id"
+        " WHERE b.month = ?"
+        " ORDER BY umb.name, b.category",
+        (month,),
+    ).fetchall()
+
+    conn.close()
+
+    y, m_int = int(month[:4]), int(month[5:])
+    prev_m = f"{y-1}-12" if m_int == 1 else f"{y}-{m_int-1:02d}"
+    next_m = f"{y+1}-01" if m_int == 12 else f"{y}-{m_int+1:02d}"
+    month_label = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
+
+    return render_template(
+        "admin.html",
+        month=month,
+        month_label=month_label,
+        prev_month=prev_m,
+        next_month=next_m,
+        total_month=total_month,
+        draft_count=draft_count,
+        user_count=user_count,
+        umbrella_count=umbrella_count,
+        umbrella_labels=[r["name"] for r in umb_rows],
+        umbrella_values=[round(r["total"], 2) for r in umb_rows],
+        cat_labels=[r["category"] for r in cat_rows],
+        cat_values=[round(r["total"], 2) for r in cat_rows],
+        user_rows=user_rows,
+        trend_labels=[r["m"] for r in trend_rows],
+        trend_values=[round(r["total"], 2) for r in trend_rows],
+        drafts=drafts,
+        budget_rows=budget_rows,
+    )
+
+
+@app.route("/admin/expenses/<int:id>/confirm", methods=["POST"])
+@power_required
+def admin_confirm_expense(id):
+    from database.db import get_db
+    month = request.form.get("month", datetime.now(PACIFIC).strftime("%Y-%m"))
+    conn = get_db()
+    conn.execute("UPDATE expenses SET status = 'confirmed' WHERE id = ?", (id,))
+    conn.commit()
+    conn.close()
+    flash("Expense confirmed.", "success")
+    return redirect(url_for("admin_dashboard", month=month))
+
+
+@app.route("/admin/expenses/<int:id>/delete", methods=["POST"])
+@power_required
+def admin_delete_expense(id):
+    from database.db import get_db
+    month = request.form.get("month", datetime.now(PACIFIC).strftime("%Y-%m"))
+    conn = get_db()
+    conn.execute("DELETE FROM expenses WHERE id = ?", (id,))
+    conn.commit()
+    conn.close()
+    flash("Expense deleted.", "success")
+    return redirect(url_for("admin_dashboard", month=month))
+
+
+@app.route("/admin/budgets")
+@power_required
+def admin_budgets():
+    from database.db import get_db
+    now = datetime.now(PACIFIC)
+    month = request.args.get("month", now.strftime("%Y-%m"))
+    try:
+        datetime.strptime(month, "%Y-%m")
+    except ValueError:
+        month = now.strftime("%Y-%m")
+
+    conn = get_db()
+    budget_rows = conn.execute(
+        "SELECT b.*, umb.name as umbrella_name,"
+        " COALESCE((SELECT SUM(e.amount) FROM expenses e"
+        "           WHERE e.umbrella_id = b.umbrella_id"
+        "           AND e.category = b.category"
+        "           AND strftime('%Y-%m', e.date) = b.month), 0) as actual"
+        " FROM budgets b"
+        " JOIN umbrellas umb ON umb.id = b.umbrella_id"
+        " WHERE b.month = ?"
+        " ORDER BY umb.name, b.category",
+        (month,),
+    ).fetchall()
+    umbrellas = conn.execute("SELECT id, name FROM umbrellas ORDER BY name").fetchall()
+    conn.close()
+
+    y, m_int = int(month[:4]), int(month[5:])
+    prev_m = f"{y-1}-12" if m_int == 1 else f"{y}-{m_int-1:02d}"
+    next_m = f"{y+1}-01" if m_int == 12 else f"{y}-{m_int+1:02d}"
+    month_label = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
+
+    return render_template(
+        "admin_budgets.html",
+        month=month,
+        month_label=month_label,
+        prev_month=prev_m,
+        next_month=next_m,
+        budget_rows=budget_rows,
+        umbrellas=umbrellas,
+        categories=CATEGORIES,
+    )
+
+
+@app.route("/admin/budgets/set", methods=["POST"])
+@power_required
+def admin_set_budget():
+    from database.db import get_db
+    umbrella_id = request.form.get("umbrella_id", "").strip()
+    category = request.form.get("category", "").strip()
+    amount_raw = request.form.get("amount", "").strip()
+    month = request.form.get("month", datetime.now(PACIFIC).strftime("%Y-%m")).strip()
+
+    if not umbrella_id.isdigit() or not category or not amount_raw:
+        flash("All fields are required.", "error")
+        return redirect(url_for("admin_budgets", month=month))
+    try:
+        amount = float(amount_raw)
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        flash("Amount must be a positive number.", "error")
+        return redirect(url_for("admin_budgets", month=month))
+
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO budgets (umbrella_id, category, month, amount, created_at)"
+        " VALUES (?, ?, ?, ?, ?)"
+        " ON CONFLICT(umbrella_id, category, month)"
+        " DO UPDATE SET amount = excluded.amount",
+        (int(umbrella_id), category, month, amount, datetime.now(PACIFIC).isoformat()),
+    )
+    conn.commit()
+    conn.close()
+    flash(f"Budget set: {category} for {month}.", "success")
+    return redirect(url_for("admin_budgets", month=month))
+
+
+@app.route("/admin/budgets/<int:id>/delete", methods=["POST"])
+@power_required
+def admin_delete_budget(id):
+    from database.db import get_db
+    conn = get_db()
+    row = conn.execute("SELECT month FROM budgets WHERE id = ?", (id,)).fetchone()
+    month = row["month"] if row else datetime.now(PACIFIC).strftime("%Y-%m")
+    conn.execute("DELETE FROM budgets WHERE id = ?", (id,))
+    conn.commit()
+    conn.close()
+    flash("Budget removed.", "success")
+    return redirect(url_for("admin_budgets", month=month))
 
 
 if __name__ == "__main__":

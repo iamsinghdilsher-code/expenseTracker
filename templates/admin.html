@@ -1,0 +1,314 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Dashboard — Spendly{% endblock %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<section class="dash-section">
+    <div class="admin-inner">
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}
+                <div class="flash flash-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endwith %}
+
+        <!-- Header -->
+        <div class="dash-header">
+            <div>
+                <h1 class="dash-title">Admin Dashboard</h1>
+                <p class="dash-subtitle">Power User · {{ current_user['name'] }}</p>
+            </div>
+            <a href="{{ url_for('admin_budgets', month=month) }}" class="btn-ghost">Manage Budgets</a>
+        </div>
+
+        <!-- Month nav -->
+        <div class="month-nav">
+            <a href="{{ url_for('admin_dashboard', month=prev_month) }}" class="month-arrow">&#8592;</a>
+            <span class="month-label">{{ month_label }}</span>
+            <a href="{{ url_for('admin_dashboard', month=next_month) }}" class="month-arrow">&#8594;</a>
+        </div>
+
+        <!-- Summary stats -->
+        <div class="admin-stats">
+            <div class="dash-card stat-card-admin">
+                <p class="summary-label">Total Spent</p>
+                <p class="summary-amount">${{ "%.2f"|format(total_month) }}</p>
+                <p class="summary-sub">{{ month_label }}</p>
+            </div>
+            <div class="dash-card stat-card-admin {% if draft_count > 0 %}stat-card-warn{% endif %}">
+                <p class="summary-label">Drafts</p>
+                <p class="summary-amount">{{ draft_count }}</p>
+                <p class="summary-sub">pending review</p>
+            </div>
+            <div class="dash-card stat-card-admin">
+                <p class="summary-label">Users</p>
+                <p class="summary-amount">{{ user_count }}</p>
+                <p class="summary-sub">registered</p>
+            </div>
+            <div class="dash-card stat-card-admin">
+                <p class="summary-label">Umbrellas</p>
+                <p class="summary-amount">{{ umbrella_count }}</p>
+                <p class="summary-sub">active</p>
+            </div>
+        </div>
+
+        <!-- Charts row: umbrella bar + category doughnut -->
+        {% if umbrella_labels or cat_labels %}
+        <div class="admin-chart-grid">
+            <div class="dash-card admin-chart-card">
+                <p class="admin-chart-title">Spending by Umbrella</p>
+                {% if umbrella_labels %}
+                <canvas id="umbChart"></canvas>
+                {% else %}
+                <p class="empty-chart">No data for {{ month_label }}.</p>
+                {% endif %}
+            </div>
+            <div class="dash-card admin-chart-card">
+                <p class="admin-chart-title">Spending by Category</p>
+                {% if cat_labels %}
+                <canvas id="catChart"></canvas>
+                {% else %}
+                <p class="empty-chart">No data for {{ month_label }}.</p>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- 6-month trend -->
+        {% if trend_labels %}
+        <div class="dash-card" style="margin-bottom:1.25rem; padding:1.75rem">
+            <p class="admin-chart-title">6-Month Trend</p>
+            <div style="height:180px">
+                <canvas id="trendChart"></canvas>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Spending by user table -->
+        {% if user_rows %}
+        <div class="dash-card table-card" style="margin-bottom:1.25rem">
+            <div class="table-header">
+                <h2 class="table-title">Spending by User — {{ month_label }}</h2>
+            </div>
+            <div class="table-wrap">
+                <table class="expense-table">
+                    <thead>
+                        <tr>
+                            <th>User</th>
+                            <th>Total Spent</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for u in user_rows %}
+                        <tr>
+                            <td>{{ u['name'] }}</td>
+                            <td class="col-amount">${{ "%.2f"|format(u['total']) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Draft queue -->
+        <div class="dash-card table-card" style="margin-bottom:1.25rem">
+            <div class="table-header">
+                <h2 class="table-title">
+                    Draft Queue
+                    {% if draft_count > 0 %}
+                    <span class="badge-count">{{ draft_count }}</span>
+                    {% endif %}
+                </h2>
+            </div>
+            {% if drafts %}
+            <div class="table-wrap">
+                <table class="expense-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Description</th>
+                            <th>Category</th>
+                            <th>Amount</th>
+                            <th>Umbrella</th>
+                            <th>User</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for e in drafts %}
+                        <tr>
+                            <td class="col-date">{{ e['date'] }}</td>
+                            <td class="col-desc">{{ e['description'] or '—' }}</td>
+                            <td><span class="cat-badge cat-{{ e['category']|lower }}">{{ e['category'] }}</span></td>
+                            <td class="col-amount">${{ "%.2f"|format(e['amount']) }}</td>
+                            <td class="col-source">{{ e['umbrella_name'] or '—' }}</td>
+                            <td class="col-source">{{ e['user_name'] }}</td>
+                            <td class="col-actions">
+                                <form method="POST"
+                                      action="{{ url_for('admin_confirm_expense', id=e['id']) }}"
+                                      style="display:inline">
+                                    <input type="hidden" name="month" value="{{ month }}">
+                                    <button type="submit" class="action-link">Confirm</button>
+                                </form>
+                                <a href="{{ url_for('edit_expense', id=e['id']) }}"
+                                   class="action-link">Edit</a>
+                                <form method="POST"
+                                      action="{{ url_for('admin_delete_expense', id=e['id']) }}"
+                                      onsubmit="return confirm('Delete this expense?')"
+                                      style="display:inline">
+                                    <input type="hidden" name="month" value="{{ month }}">
+                                    <button type="submit" class="action-link action-delete">Delete</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <p class="empty-text">No draft expenses — everything is confirmed.</p>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Budget overview -->
+        <div class="dash-card table-card">
+            <div class="table-header">
+                <h2 class="table-title">Budgets — {{ month_label }}</h2>
+                <a href="{{ url_for('admin_budgets', month=month) }}" class="btn-export">Manage</a>
+            </div>
+            {% if budget_rows %}
+            <div class="table-wrap">
+                <table class="expense-table">
+                    <thead>
+                        <tr>
+                            <th>Umbrella</th>
+                            <th>Category</th>
+                            <th>Budget</th>
+                            <th>Actual</th>
+                            <th>Usage</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for b in budget_rows %}
+                        {% set pct = ((b['actual'] / b['amount'] * 100)|int) if b['amount'] > 0 else 0 %}
+                        {% set pct_capped = [pct, 100]|min %}
+                        <tr>
+                            <td class="col-source">{{ b['umbrella_name'] }}</td>
+                            <td><span class="cat-badge cat-{{ b['category']|lower }}">{{ b['category'] }}</span></td>
+                            <td>${{ "%.2f"|format(b['amount']) }}</td>
+                            <td class="col-amount {% if b['actual'] > b['amount'] %}text-danger{% endif %}">
+                                ${{ "%.2f"|format(b['actual']) }}
+                            </td>
+                            <td style="min-width:120px">
+                                <div style="display:flex;align-items:center;gap:0.5rem">
+                                    <div class="budget-progress" style="flex:1">
+                                        <div class="budget-progress-bar {% if pct > 100 %}budget-progress-over{% endif %}"
+                                             style="width:{{ pct_capped }}%"></div>
+                                    </div>
+                                    <span style="font-size:0.75rem;color:var(--ink-muted);white-space:nowrap">{{ pct }}%</span>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <p class="empty-text">No budgets set for {{ month_label }}.</p>
+                <a href="{{ url_for('admin_budgets', month=month) }}" class="btn-primary" style="margin-top:1rem">Set budgets</a>
+            </div>
+            {% endif %}
+        </div>
+
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CHART_COLORS = [
+    '#1a472a','#c17f24','#5b7fa6','#8b5e83',
+    '#4a7c59','#d4944a','#6b9ab8','#a07090',
+];
+
+{% if umbrella_labels %}
+new Chart(document.getElementById('umbChart').getContext('2d'), {
+    type: 'bar',
+    data: {
+        labels: {{ umbrella_labels | tojson }},
+        datasets: [{
+            label: 'Spent',
+            data: {{ umbrella_values | tojson }},
+            backgroundColor: CHART_COLORS,
+            borderRadius: 4,
+        }]
+    },
+    options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: { legend: { display: false } },
+        scales: {
+            x: { ticks: { callback: v => `$${v.toFixed(0)}`, font: { family: 'DM Sans', size: 11 } } },
+            y: { ticks: { font: { family: 'DM Sans', size: 11 } } },
+        }
+    }
+});
+{% endif %}
+
+{% if cat_labels %}
+new Chart(document.getElementById('catChart').getContext('2d'), {
+    type: 'doughnut',
+    data: {
+        labels: {{ cat_labels | tojson }},
+        datasets: [{
+            data: {{ cat_values | tojson }},
+            backgroundColor: CHART_COLORS,
+            borderWidth: 2,
+            borderColor: '#ffffff',
+        }]
+    },
+    options: {
+        responsive: true,
+        plugins: {
+            legend: { position: 'right', labels: { font: { family: 'DM Sans', size: 11 }, padding: 10 } },
+            tooltip: { callbacks: { label: ctx => ` $${ctx.parsed.toFixed(2)}` } }
+        },
+        cutout: '60%',
+    }
+});
+{% endif %}
+
+{% if trend_labels %}
+new Chart(document.getElementById('trendChart').getContext('2d'), {
+    type: 'bar',
+    data: {
+        labels: {{ trend_labels | tojson }},
+        datasets: [{
+            label: 'Total Spent',
+            data: {{ trend_values | tojson }},
+            backgroundColor: '#c17f24',
+            borderRadius: 4,
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+            y: { ticks: { callback: v => `$${v.toFixed(0)}`, font: { family: 'DM Sans', size: 11 } } },
+            x: { ticks: { font: { family: 'DM Sans', size: 11 } } },
+        }
+    }
+});
+{% endif %}
+</script>
+{% endblock %}
