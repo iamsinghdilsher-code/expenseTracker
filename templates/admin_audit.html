@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+
+{% block title %}Audit Trail — Spendly Admin{% endblock %}
+
+{% block content %}
+<section class="dash-section">
+    <div class="admin-inner">
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}
+                <div class="flash flash-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endwith %}
+
+        <!-- Header -->
+        <div class="dash-header">
+            <div>
+                <h1 class="dash-title">Audit Trail</h1>
+                <p class="dash-subtitle">All data-changing actions across the platform.</p>
+            </div>
+            <a href="{{ url_for('admin_dashboard') }}" class="btn-ghost">&#8592; Admin Dashboard</a>
+        </div>
+
+        <!-- Filters -->
+        <div class="dash-card" style="margin-bottom:1.5rem;padding:1.25rem 1.5rem">
+            <form method="GET" action="{{ url_for('admin_audit') }}"
+                  style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:flex-end">
+
+                <div style="display:flex;flex-direction:column;gap:0.3rem">
+                    <label class="form-label" style="margin:0;font-size:0.8rem">Entity type</label>
+                    <select name="entity_type" class="form-input form-select"
+                            style="padding:0.35rem 0.6rem;font-size:0.85rem;min-width:140px">
+                        <option value="">All types</option>
+                        {% for et in entity_types %}
+                        <option value="{{ et }}" {% if entity_type == et %}selected{% endif %}>
+                            {{ et.replace('_', ' ').title() }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div style="display:flex;flex-direction:column;gap:0.3rem">
+                    <label class="form-label" style="margin:0;font-size:0.8rem">Action</label>
+                    <select name="action" class="form-input form-select"
+                            style="padding:0.35rem 0.6rem;font-size:0.85rem;min-width:130px">
+                        <option value="">All actions</option>
+                        {% for a in actions %}
+                        <option value="{{ a }}" {% if action == a %}selected{% endif %}>
+                            {{ a.replace('_', ' ').title() }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div style="display:flex;flex-direction:column;gap:0.3rem">
+                    <label class="form-label" style="margin:0;font-size:0.8rem">Actor</label>
+                    <select name="actor_id" class="form-input form-select"
+                            style="padding:0.35rem 0.6rem;font-size:0.85rem;min-width:160px">
+                        <option value="">All users</option>
+                        {% for u in all_users %}
+                        <option value="{{ u['id'] }}"
+                                {% if actor_id == u['id']|string %}selected{% endif %}>
+                            {{ u['name'] or u['email'] }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div style="display:flex;flex-direction:column;gap:0.3rem">
+                    <label class="form-label" style="margin:0;font-size:0.8rem">From</label>
+                    <input type="date" name="from_date" value="{{ from_date }}"
+                           class="form-input" style="padding:0.35rem 0.6rem;font-size:0.85rem">
+                </div>
+
+                <div style="display:flex;flex-direction:column;gap:0.3rem">
+                    <label class="form-label" style="margin:0;font-size:0.8rem">To</label>
+                    <input type="date" name="to_date" value="{{ to_date }}"
+                           class="form-input" style="padding:0.35rem 0.6rem;font-size:0.85rem">
+                </div>
+
+                <div style="display:flex;gap:0.5rem;align-items:flex-end">
+                    <button type="submit" class="btn-primary"
+                            style="padding:0.4rem 1rem;font-size:0.875rem">Filter</button>
+                    {% if entity_type or action or actor_id or from_date or to_date %}
+                    <a href="{{ url_for('admin_audit') }}" class="btn-ghost"
+                       style="padding:0.4rem 0.8rem;font-size:0.875rem">Clear</a>
+                    {% endif %}
+                </div>
+            </form>
+        </div>
+
+        <!-- Results count + pagination info -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
+            <p style="font-size:0.85rem;color:var(--ink-muted);margin:0">
+                {{ total_count }} event{% if total_count != 1 %}s{% endif %}
+                {% if entity_type or action or actor_id or from_date or to_date %}(filtered){% endif %}
+            </p>
+            {% if total_pages > 1 %}
+            <p style="font-size:0.85rem;color:var(--ink-muted);margin:0">
+                Page {{ page }} of {{ total_pages }}
+            </p>
+            {% endif %}
+        </div>
+
+        <!-- Audit log table -->
+        <div class="dash-card table-card">
+            {% if logs %}
+            <div class="table-wrap">
+                <table class="expense-table">
+                    <thead>
+                        <tr>
+                            <th style="white-space:nowrap">Timestamp</th>
+                            <th>Actor</th>
+                            <th>Action</th>
+                            <th>Entity</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for log in logs %}
+                        <tr>
+                            <td style="font-size:0.8rem;color:var(--ink-muted);white-space:nowrap">
+                                {{ log['timestamp'][:19].replace('T', ' ') }}
+                            </td>
+                            <td style="font-size:0.875rem">
+                                {{ log['actor_name'] or '—' }}
+                            </td>
+                            <td>
+                                <span class="role-badge role-{{ log['action'] }}"
+                                      style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.03em">
+                                    {{ log['action'].replace('_', ' ') }}
+                                </span>
+                            </td>
+                            <td style="font-size:0.82rem;color:var(--ink-muted)">
+                                {{ log['entity_type'].replace('_', ' ') }}
+                                {% if log['entity_id'] %}
+                                <span style="opacity:0.6">#{{ log['entity_id'] }}</span>
+                                {% endif %}
+                            </td>
+                            <td class="col-desc" style="font-size:0.875rem">
+                                {{ log['description'] }}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            {% else %}
+            <div style="padding:3rem 1.5rem;text-align:center;color:var(--ink-muted)">
+                <p style="font-size:1.1rem;margin-bottom:0.5rem">No audit events found.</p>
+                <p style="font-size:0.875rem">
+                    {% if entity_type or action or actor_id or from_date or to_date %}
+                    Try adjusting the filters.
+                    {% else %}
+                    Events will appear here as users take actions.
+                    {% endif %}
+                </p>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Pagination -->
+        {% if total_pages > 1 %}
+        <div style="display:flex;justify-content:center;gap:0.5rem;margin-top:1.5rem;flex-wrap:wrap">
+            {% set base_args = {'entity_type': entity_type, 'actor_id': actor_id,
+                                'action': action, 'from_date': from_date, 'to_date': to_date} %}
+            {% if page > 1 %}
+            <a href="{{ url_for('admin_audit', page=page-1, **base_args) }}"
+               class="btn-ghost" style="padding:0.35rem 0.8rem;font-size:0.85rem">&#8592; Prev</a>
+            {% endif %}
+
+            {% for p in range([1, page-2]|max, [total_pages+1, page+3]|min) %}
+            <a href="{{ url_for('admin_audit', page=p, **base_args) }}"
+               class="btn-ghost {% if p == page %}btn-ghost-active{% endif %}"
+               style="padding:0.35rem 0.65rem;font-size:0.85rem{% if p == page %};font-weight:600{% endif %}">
+                {{ p }}
+            </a>
+            {% endfor %}
+
+            {% if page < total_pages %}
+            <a href="{{ url_for('admin_audit', page=page+1, **base_args) }}"
+               class="btn-ghost" style="padding:0.35rem 0.8rem;font-size:0.85rem">Next &#8594;</a>
+            {% endif %}
+        </div>
+        {% endif %}
+
+    </div>
+</section>
+{% endblock %}

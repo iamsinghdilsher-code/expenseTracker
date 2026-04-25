@@ -87,6 +87,17 @@ def init_db():
             used_by INTEGER REFERENCES users(id),
             used_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            actor_id INTEGER REFERENCES users(id),
+            actor_name TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id INTEGER,
+            umbrella_id INTEGER,
+            description TEXT NOT NULL DEFAULT ''
+        );
     """)
 
     # Column migrations — each wrapped individually so one failure doesn't block the rest
@@ -112,6 +123,8 @@ def init_db():
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_expenses_dedup"
         " ON expenses(dedup_hash) WHERE dedup_hash IS NOT NULL"
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id)")
     conn.commit()
     conn.close()
 

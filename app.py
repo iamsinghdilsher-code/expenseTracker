@@ -395,7 +395,7 @@ def _save_expense(user_id, amount, category, description, date, source, umbrella
         if row:
             category_id = row["id"]
     try:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO expenses"
             " (user_id, umbrella_id, category_id, payment_method_id, amount, category, description,"
             "  date, source, status, confidence_score, dedup_hash, created_at)"
@@ -404,10 +404,31 @@ def _save_expense(user_id, amount, category, description, date, source, umbrella
              date, source, status, confidence_score, dedup_hash, datetime.now(PACIFIC).isoformat()),
         )
         conn.commit()
+        return cur.lastrowid
     except sqlite3.IntegrityError:
         raise DuplicateExpenseError(f"{description} ${amount:.2f} on {date}")
     finally:
         conn.close()
+
+
+def _log_audit(action, entity_type, entity_id, description, umbrella_id=None):
+    """Append one row to audit_log for the current request actor. Fire-and-forget; never raises."""
+    from database.db import get_db
+    try:
+        actor_id = session.get("user_id")
+        actor_name = (g.user["name"] if g.user else "") or ""
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO audit_log"
+            " (timestamp, actor_id, actor_name, action, entity_type, entity_id, umbrella_id, description)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (datetime.now(PACIFIC).isoformat(), actor_id, actor_name,
+             action, entity_type, entity_id, umbrella_id, description),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 # ------------------------------------------------------------------ #
@@ -540,6 +561,7 @@ def profile():
             conn.execute("UPDATE users SET name = ? WHERE id = ?", (name, session["user_id"]))
             conn.commit()
             flash("Name updated.", "success")
+            _log_audit("update", "profile", session["user_id"], "Updated display name")
         if current_pw or new_pw:
             if not check_password_hash(user["password_hash"], current_pw):
                 conn.close()
@@ -553,6 +575,7 @@ def profile():
             )
             conn.commit()
             flash("Password updated.", "success")
+            _log_audit("update", "profile", session["user_id"], "Changed password")
         conn.close()
         return redirect(url_for("profile"))
 
@@ -680,11 +703,14 @@ def add_expense():
         payment_method_id = int(raw_pm) if raw_pm.isdigit() else None
         status = 'draft' if source == 'photo' and last_four_detected and not payment_method_id else 'confirmed'
         try:
-            _save_expense(session["user_id"], amount, category, description, date, source,
+            expense_id = _save_expense(session["user_id"], amount, category, description, date, source,
                           umbrella_id=g.active_umbrella_id,
                           payment_method_id=payment_method_id,
                           status=status)
             flash(f"${amount:.2f} expense added.", "success")
+            _log_audit("create", "expense", expense_id,
+                       f"${amount:.2f} {category} — {description}",
+                       umbrella_id=g.active_umbrella_id)
         except DuplicateExpenseError:
             flash("Duplicate — this expense already exists and was not added.", "warning")
         except Exception as e:
@@ -785,6 +811,10 @@ def add_expense_bulk():
                 skipped += 1
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    if saved > 0:
+        _log_audit("create", "expense", None,
+                   f"Bulk import: {saved} saved, {skipped} duplicates skipped",
+                   umbrella_id=g.active_umbrella_id)
     return jsonify({"saved": saved, "skipped": skipped})
 
 
@@ -841,6 +871,9 @@ def edit_expense(id):
         conn.commit()
         conn.close()
         flash("Expense updated.", "success")
+        _log_audit("update", "expense", id,
+                   f"Updated: {description} ${amount:.2f} ({category})",
+                   umbrella_id=expense["umbrella_id"])
         return redirect(url_for("expenses"))
     umb_id = expense["umbrella_id"] or g.active_umbrella_id
     category_tree = _build_category_tree(umb_id) if umb_id else []
@@ -854,6 +887,7 @@ def delete_expense(id):
     from database.db import get_db
     conn = get_db()
     is_power = g.user and g.user["role"] == "power"
+    expense = conn.execute("SELECT * FROM expenses WHERE id = ?", (id,)).fetchone()
     if is_power:
         conn.execute("DELETE FROM expenses WHERE id = ?", (id,))
     else:
@@ -863,6 +897,10 @@ def delete_expense(id):
     conn.commit()
     conn.close()
     flash("Expense deleted.", "success")
+    if expense:
+        _log_audit("delete", "expense", id,
+                   f"Deleted: {expense['description']} ${expense['amount']:.2f}",
+                   umbrella_id=expense["umbrella_id"])
     return redirect(url_for("expenses"))
 
 
@@ -979,6 +1017,9 @@ def add_payment_method():
     conn.commit()
     conn.close()
     flash(f"Card ending in {last_four} added.", "success")
+    _log_audit("create", "payment_method", None,
+               f"Added card ****{last_four} ({bank_name} {card_type})",
+               umbrella_id=g.active_umbrella_id)
     return redirect(url_for("payment_methods"))
 
 
@@ -1011,6 +1052,9 @@ def edit_payment_method(id):
         conn.commit()
         conn.close()
         flash("Card updated.", "success")
+        _log_audit("update", "payment_method", id,
+                   f"Updated card ****{last_four} ({bank_name} {card_type})",
+                   umbrella_id=g.active_umbrella_id)
         return redirect(url_for("payment_methods"))
     conn.close()
     return render_template("edit_payment_method.html", pm=pm, card_types=CARD_TYPES)
@@ -1021,6 +1065,10 @@ def edit_payment_method(id):
 def delete_payment_method(id):
     from database.db import get_db
     conn = get_db()
+    pm = conn.execute(
+        "SELECT * FROM payment_methods WHERE id = ? AND umbrella_id = ?",
+        (id, g.active_umbrella_id),
+    ).fetchone()
     conn.execute(
         "DELETE FROM payment_methods WHERE id = ? AND umbrella_id = ?",
         (id, g.active_umbrella_id),
@@ -1028,6 +1076,10 @@ def delete_payment_method(id):
     conn.commit()
     conn.close()
     flash("Card removed.", "success")
+    if pm:
+        _log_audit("delete", "payment_method", id,
+                   f"Removed card ****{pm['last_four']} ({pm['bank_name']} {pm['card_type']})",
+                   umbrella_id=g.active_umbrella_id)
     return redirect(url_for("payment_methods"))
 
 
@@ -1146,10 +1198,15 @@ def admin_confirm_expense(id):
     from database.db import get_db
     month = request.form.get("month", datetime.now(PACIFIC).strftime("%Y-%m"))
     conn = get_db()
+    expense = conn.execute("SELECT * FROM expenses WHERE id = ?", (id,)).fetchone()
     conn.execute("UPDATE expenses SET status = 'confirmed' WHERE id = ?", (id,))
     conn.commit()
     conn.close()
     flash("Expense confirmed.", "success")
+    if expense:
+        _log_audit("confirm", "expense", id,
+                   f"Confirmed draft: {expense['description']} ${expense['amount']:.2f}",
+                   umbrella_id=expense["umbrella_id"])
     return redirect(url_for("admin_dashboard", month=month))
 
 
@@ -1159,10 +1216,15 @@ def admin_delete_expense(id):
     from database.db import get_db
     month = request.form.get("month", datetime.now(PACIFIC).strftime("%Y-%m"))
     conn = get_db()
+    expense = conn.execute("SELECT * FROM expenses WHERE id = ?", (id,)).fetchone()
     conn.execute("DELETE FROM expenses WHERE id = ?", (id,))
     conn.commit()
     conn.close()
     flash("Expense deleted.", "success")
+    if expense:
+        _log_audit("delete", "expense", id,
+                   f"Admin deleted: {expense['description']} ${expense['amount']:.2f}",
+                   umbrella_id=expense["umbrella_id"])
     return redirect(url_for("admin_dashboard", month=month))
 
 
@@ -1241,6 +1303,9 @@ def admin_set_budget():
     conn.commit()
     conn.close()
     flash(f"Budget set: {category} for {month}.", "success")
+    _log_audit("create", "budget", None,
+               f"Set budget: {category} ${amount:.2f} for {month}",
+               umbrella_id=int(umbrella_id))
     return redirect(url_for("admin_budgets", month=month))
 
 
@@ -1249,12 +1314,16 @@ def admin_set_budget():
 def admin_delete_budget(id):
     from database.db import get_db
     conn = get_db()
-    row = conn.execute("SELECT month FROM budgets WHERE id = ?", (id,)).fetchone()
+    row = conn.execute("SELECT * FROM budgets WHERE id = ?", (id,)).fetchone()
     month = row["month"] if row else datetime.now(PACIFIC).strftime("%Y-%m")
     conn.execute("DELETE FROM budgets WHERE id = ?", (id,))
     conn.commit()
     conn.close()
     flash("Budget removed.", "success")
+    if row:
+        _log_audit("delete", "budget", id,
+                   f"Deleted budget: {row['category']} ${row['amount']:.2f} for {row['month']}",
+                   umbrella_id=row["umbrella_id"])
     return redirect(url_for("admin_budgets", month=month))
 
 
@@ -1320,10 +1389,12 @@ def admin_set_user_role(id):
         flash("User not found.", "error")
         return redirect(url_for("admin_users"))
     new_role = "power" if user["role"] == "normal" else "normal"
+    old_role = user["role"]
     conn.execute("UPDATE users SET role = ? WHERE id = ?", (new_role, id))
     conn.commit()
     conn.close()
     flash(f"Role updated to '{new_role}'.", "success")
+    _log_audit("role_change", "user", id, f"Role changed: {old_role} → {new_role}")
     return redirect(url_for("admin_users"))
 
 
@@ -1336,8 +1407,8 @@ def admin_grant_umbrella(id):
         flash("Invalid umbrella.", "error")
         return redirect(url_for("admin_users"))
     conn = get_db()
-    user = conn.execute("SELECT id FROM users WHERE id = ?", (id,)).fetchone()
-    umbrella = conn.execute("SELECT id FROM umbrellas WHERE id = ?", (int(umbrella_id),)).fetchone()
+    user = conn.execute("SELECT id, email FROM users WHERE id = ?", (id,)).fetchone()
+    umbrella = conn.execute("SELECT id, name FROM umbrellas WHERE id = ?", (int(umbrella_id),)).fetchone()
     if not user or not umbrella:
         conn.close()
         flash("User or umbrella not found.", "error")
@@ -1350,6 +1421,9 @@ def admin_grant_umbrella(id):
         )
         conn.commit()
         flash("Umbrella access granted.", "success")
+        _log_audit("grant", "umbrella_access", None,
+                   f"Granted '{umbrella['name']}' access to {user['email']}",
+                   umbrella_id=int(umbrella_id))
     except sqlite3.IntegrityError:
         flash("User already has access to this umbrella.", "warning")
     conn.close()
@@ -1361,6 +1435,8 @@ def admin_grant_umbrella(id):
 def admin_revoke_umbrella(user_id, umbrella_id):
     from database.db import get_db
     conn = get_db()
+    user = conn.execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
+    umbrella = conn.execute("SELECT name FROM umbrellas WHERE id = ?", (umbrella_id,)).fetchone()
     conn.execute(
         "DELETE FROM umbrella_access WHERE user_id = ? AND umbrella_id = ?",
         (user_id, umbrella_id),
@@ -1368,6 +1444,9 @@ def admin_revoke_umbrella(user_id, umbrella_id):
     conn.commit()
     conn.close()
     flash("Umbrella access revoked.", "success")
+    _log_audit("revoke", "umbrella_access", None,
+               f"Revoked '{umbrella['name'] if umbrella else umbrella_id}' access from {user['email'] if user else user_id}",
+               umbrella_id=umbrella_id)
     return redirect(url_for("admin_users"))
 
 
@@ -1381,7 +1460,7 @@ def admin_create_invite():
         return redirect(url_for("admin_users"))
     token = secrets.token_urlsafe(16)
     conn = get_db()
-    umbrella = conn.execute("SELECT id FROM umbrellas WHERE id = ?", (int(umbrella_id),)).fetchone()
+    umbrella = conn.execute("SELECT id, name FROM umbrellas WHERE id = ?", (int(umbrella_id),)).fetchone()
     if not umbrella:
         conn.close()
         flash("Umbrella not found.", "error")
@@ -1394,6 +1473,9 @@ def admin_create_invite():
     conn.commit()
     conn.close()
     flash("Invite link created.", "success")
+    _log_audit("create", "invite", None,
+               f"Created invite link for '{umbrella['name']}'",
+               umbrella_id=int(umbrella_id))
     return redirect(url_for("admin_users"))
 
 
@@ -1402,10 +1484,16 @@ def admin_create_invite():
 def admin_delete_invite(id):
     from database.db import get_db
     conn = get_db()
+    invite = conn.execute(
+        "SELECT il.id, umb.name as umbrella_name FROM invite_links il"
+        " JOIN umbrellas umb ON umb.id = il.umbrella_id WHERE il.id = ?", (id,)
+    ).fetchone()
     conn.execute("DELETE FROM invite_links WHERE id = ?", (id,))
     conn.commit()
     conn.close()
     flash("Invite link deleted.", "success")
+    _log_audit("delete", "invite", id,
+               f"Deleted invite for '{invite['umbrella_name'] if invite else '?'}'")
     return redirect(url_for("admin_users"))
 
 
@@ -1440,7 +1528,84 @@ def use_invite(token):
     conn.close()
     session["active_umbrella_id"] = link["umbrella_id"]
     flash(f"You've joined '{umbrella['name']}'!", "success")
+    _log_audit("invite_use", "invite", link["id"],
+               f"Used invite to join '{umbrella['name']}'",
+               umbrella_id=link["umbrella_id"])
     return redirect(url_for("expenses"))
+
+
+# ------------------------------------------------------------------ #
+# Admin — Audit Trail (Phase 8)                                       #
+# ------------------------------------------------------------------ #
+
+AUDIT_ENTITY_TYPES = ["expense", "payment_method", "budget", "user", "umbrella_access", "invite", "profile"]
+AUDIT_ACTIONS = ["create", "update", "delete", "confirm", "role_change", "grant", "revoke", "invite_use"]
+
+
+@app.route("/admin/audit")
+@power_required
+def admin_audit():
+    from database.db import get_db
+    conn = get_db()
+
+    entity_type = request.args.get("entity_type", "").strip()
+    actor_id = request.args.get("actor_id", "").strip()
+    action = request.args.get("action", "").strip()
+    from_date = request.args.get("from_date", "").strip()
+    to_date = request.args.get("to_date", "").strip()
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except (ValueError, TypeError):
+        page = 1
+    per_page = 50
+
+    where = "WHERE 1=1"
+    params = []
+    if entity_type:
+        where += " AND entity_type = ?"
+        params.append(entity_type)
+    if actor_id and actor_id.isdigit():
+        where += " AND actor_id = ?"
+        params.append(int(actor_id))
+    if action:
+        where += " AND action = ?"
+        params.append(action)
+    if from_date:
+        where += " AND date(timestamp) >= ?"
+        params.append(from_date)
+    if to_date:
+        where += " AND date(timestamp) <= ?"
+        params.append(to_date)
+
+    total_count = conn.execute(
+        f"SELECT COUNT(*) as c FROM audit_log {where}", params
+    ).fetchone()["c"]
+
+    logs = conn.execute(
+        f"SELECT * FROM audit_log {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+        params + [per_page, (page - 1) * per_page],
+    ).fetchall()
+
+    all_users = conn.execute("SELECT id, name, email FROM users ORDER BY name").fetchall()
+    conn.close()
+
+    total_pages = max(1, (total_count + per_page - 1) // per_page)
+
+    return render_template(
+        "admin_audit.html",
+        logs=logs,
+        all_users=all_users,
+        page=page,
+        total_pages=total_pages,
+        total_count=total_count,
+        entity_type=entity_type,
+        actor_id=actor_id,
+        action=action,
+        from_date=from_date,
+        to_date=to_date,
+        entity_types=AUDIT_ENTITY_TYPES,
+        actions=AUDIT_ACTIONS,
+    )
 
 
 if __name__ == "__main__":
