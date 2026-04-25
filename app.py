@@ -5,7 +5,7 @@ import io
 import re
 import secrets
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 from zoneinfo import ZoneInfo
 from flask import (Flask, render_template, request, redirect,
@@ -230,7 +230,14 @@ def _normalize_date(raw):
         return f"{yr}-{mo.zfill(2)}-{day.zfill(2)}"
     m = re.match(r'^(\d{1,2})[/-](\d{1,2})$', raw)
     if m:
-        yr = datetime.now(PACIFIC).strftime("%Y")
+        now = datetime.now(PACIFIC)
+        yr = now.year
+        try:
+            candidate = datetime(yr, int(m.group(1)), int(m.group(2)))
+            if candidate.replace(tzinfo=None) > now.replace(tzinfo=None).replace(hour=0, minute=0, second=0) + timedelta(days=45):
+                yr -= 1
+        except ValueError:
+            pass
         return f"{yr}-{m.group(1).zfill(2)}-{m.group(2).zfill(2)}"
     return datetime.now(PACIFIC).strftime("%Y-%m-%d")
 
