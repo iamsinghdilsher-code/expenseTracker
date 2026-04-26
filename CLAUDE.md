@@ -42,7 +42,7 @@ Flask expense tracker ("Spendly") — Jinja2 templates, SQLite, no ORM. The app 
 
 **Multi-tenant umbrella model**: Every expense, category, and payment method belongs to an umbrella. Users can belong to multiple umbrellas; `/switch-umbrella/<id>` updates `session["active_umbrella_id"]`. Normal users are isolated to their own data within permitted umbrellas. Power users (`role = 'power'`) bypass the `user_id` filter and can edit/delete any expense.
 
-**Expense CRUD**: Dashboard (`/expenses`), add, edit, delete, CSV export — all umbrella-aware. Edit/delete allow power users to operate cross-user.
+**Expense CRUD**: Dashboard (`/expenses`), add, edit, delete, CSV export — all umbrella-aware. Edit/delete allow power users to operate cross-user. The dashboard filter uses `date_from` / `date_to` query params (YYYY-MM-DD); defaults to the first day of the current month through today. The chart, total, and transaction list all respond to the same date range.
 
 **Expense field enums**:
 - `source`: `'manual'` | `'photo'` | `'statement'` | `'seed'` | `'email'`
