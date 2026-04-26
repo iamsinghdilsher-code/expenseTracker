@@ -39,11 +39,7 @@
                 {% endif %}
             </div>
             <div class="dash-hero-center">
-                <div class="dash-hero-nav">
-                    <a href="{{ url_for('expenses', month=prev_month) }}" class="dash-hero-arrow">&#8592;</a>
-                    <span class="dash-hero-month">{{ month_label }}</span>
-                    <a href="{{ url_for('expenses', month=next_month) }}" class="dash-hero-arrow">&#8594;</a>
-                </div>
+                <div class="dash-hero-month">{{ date_label }}</div>
                 <div class="dash-hero-total">${{ "%.2f"|format(total) }}</div>
                 <div class="dash-hero-count">{{ expenses|length }} transaction{{ 's' if expenses|length != 1 else '' }}</div>
             </div>
@@ -54,7 +50,9 @@
 
         <!-- Search / filter bar -->
         <form class="filter-bar" method="GET" action="{{ url_for('expenses') }}">
-            <input type="hidden" name="month" value="{{ month }}">
+            <input class="filter-date" type="date" name="date_from" value="{{ date_from }}">
+            <span class="filter-date-sep">to</span>
+            <input class="filter-date" type="date" name="date_to" value="{{ date_to }}">
             <input class="filter-search" type="text" name="search"
                    placeholder="Search description…" value="{{ search }}">
             <select class="filter-cat" name="category">
@@ -82,7 +80,7 @@
             {% endif %}
             <button class="filter-btn" type="submit">Filter</button>
             {% if search or cat_filter or member_filter %}
-            <a class="filter-clear" href="{{ url_for('expenses', month=month) }}">Clear</a>
+            <a class="filter-clear" href="{{ url_for('expenses', date_from=date_from, date_to=date_to) }}">Clear</a>
             {% endif %}
         </form>
 
@@ -98,7 +96,7 @@
                 {% if chart_labels %}
                 <canvas id="catChart"></canvas>
                 {% else %}
-                <p class="empty-chart">No data for this month yet.</p>
+                <p class="empty-chart">No data for this period yet.</p>
                 {% endif %}
             </div>
         </div>
@@ -107,7 +105,7 @@
         <div class="dash-card table-card">
             <div class="table-header">
                 <h2 class="table-title">Transactions</h2>
-                <a href="{{ url_for('export_expenses', month=month) }}" class="btn-export">Export CSV</a>
+                <a href="{{ url_for('export_expenses', date_from=date_from, date_to=date_to) }}" class="btn-export">Export CSV</a>
             </div>
             {% if expenses %}
             <div class="table-wrap">
@@ -146,7 +144,7 @@
             </div>
             {% else %}
             <div class="empty-state">
-                <p class="empty-text">No expenses logged for {{ month_label }}.</p>
+                <p class="empty-text">No expenses logged for {{ date_label }}.</p>
                 <a href="{{ url_for('add_expense') }}" class="btn-primary" style="margin-top:1rem">Add your first expense</a>
             </div>
             {% endif %}

@@ -702,11 +702,21 @@ def profile():
 def expenses():
     from database.db import get_db
     now = datetime.now(PACIFIC)
-    month = request.args.get("month", now.strftime("%Y-%m"))
+    default_from = now.replace(day=1).strftime("%Y-%m-%d")
+    default_to = now.strftime("%Y-%m-%d")
+
+    date_from = request.args.get("date_from", default_from).strip()
+    date_to = request.args.get("date_to", default_to).strip()
     try:
-        datetime.strptime(month, "%Y-%m")
+        datetime.strptime(date_from, "%Y-%m-%d")
     except ValueError:
-        month = now.strftime("%Y-%m")
+        date_from = default_from
+    try:
+        datetime.strptime(date_to, "%Y-%m-%d")
+    except ValueError:
+        date_to = default_to
+    if date_from > date_to:
+        date_from, date_to = date_to, date_from
 
     search = request.args.get("search", "").strip()
     cat_filter = request.args.get("category", "").strip()
@@ -730,22 +740,22 @@ def expenses():
             query = (
                 "SELECT e.*, u.name as member_name FROM expenses e"
                 " JOIN users u ON u.id = e.user_id"
-                " WHERE e.umbrella_id = ? AND e.user_id = ? AND strftime('%Y-%m', e.date) = ?"
+                " WHERE e.umbrella_id = ? AND e.user_id = ? AND e.date >= ? AND e.date <= ?"
             )
-            params = [g.active_umbrella_id, member_filter, month]
+            params = [g.active_umbrella_id, member_filter, date_from, date_to]
         else:
             query = (
                 "SELECT e.*, u.name as member_name FROM expenses e"
                 " JOIN users u ON u.id = e.user_id"
-                " WHERE e.umbrella_id = ? AND strftime('%Y-%m', e.date) = ?"
+                " WHERE e.umbrella_id = ? AND e.date >= ? AND e.date <= ?"
             )
-            params = [g.active_umbrella_id, month]
+            params = [g.active_umbrella_id, date_from, date_to]
     else:
         query = (
             "SELECT e.*, NULL as member_name FROM expenses e"
-            " WHERE e.user_id = ? AND e.umbrella_id = ? AND strftime('%Y-%m', e.date) = ?"
+            " WHERE e.user_id = ? AND e.umbrella_id = ? AND e.date >= ? AND e.date <= ?"
         )
-        params = [session["user_id"], g.active_umbrella_id, month]
+        params = [session["user_id"], g.active_umbrella_id, date_from, date_to]
 
     if search:
         query += " AND e.description LIKE ?"
@@ -756,26 +766,26 @@ def expenses():
     query += " ORDER BY e.date DESC"
     rows = conn.execute(query, params).fetchall()
 
-    # Category totals for the pie chart (always full month, no search/cat filter)
+    # Category totals for chart — respects date range, ignores search/cat filter
     if is_power:
         if member_filter:
             cat_rows = conn.execute(
                 "SELECT category, SUM(amount) as total FROM expenses"
-                " WHERE umbrella_id = ? AND user_id = ? AND strftime('%Y-%m', date) = ? GROUP BY category",
-                (g.active_umbrella_id, member_filter, month),
+                " WHERE umbrella_id = ? AND user_id = ? AND date >= ? AND date <= ? GROUP BY category",
+                (g.active_umbrella_id, member_filter, date_from, date_to),
             ).fetchall()
         else:
             cat_rows = conn.execute(
                 "SELECT category, SUM(amount) as total FROM expenses"
-                " WHERE umbrella_id = ? AND strftime('%Y-%m', date) = ? GROUP BY category",
-                (g.active_umbrella_id, month),
+                " WHERE umbrella_id = ? AND date >= ? AND date <= ? GROUP BY category",
+                (g.active_umbrella_id, date_from, date_to),
             ).fetchall()
     else:
         cat_rows = conn.execute(
             "SELECT category, SUM(amount) as total FROM expenses"
-            " WHERE user_id = ? AND umbrella_id = ? AND strftime('%Y-%m', date) = ?"
+            " WHERE user_id = ? AND umbrella_id = ? AND date >= ? AND date <= ?"
             " GROUP BY category",
-            (session["user_id"], g.active_umbrella_id, month),
+            (session["user_id"], g.active_umbrella_id, date_from, date_to),
         ).fetchall()
 
     conn.close()
@@ -784,10 +794,14 @@ def expenses():
     chart_labels = [r["category"] for r in cat_rows]
     chart_values = [round(r["total"], 2) for r in cat_rows]
 
-    y, m = int(month[:4]), int(month[5:])
-    prev_m = f"{y-1}-12" if m == 1 else f"{y}-{m-1:02d}"
-    next_m = f"{y+1}-01" if m == 12 else f"{y}-{m+1:02d}"
-    month_label = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
+    dt_from = datetime.strptime(date_from, "%Y-%m-%d")
+    dt_to = datetime.strptime(date_to, "%Y-%m-%d")
+    if dt_from.year == dt_to.year and dt_from.month == dt_to.month:
+        date_label = dt_from.strftime("%B %Y")
+    elif dt_from.year == dt_to.year:
+        date_label = f"{dt_from.strftime('%b %d')} – {dt_to.strftime('%b %d, %Y')}"
+    else:
+        date_label = f"{dt_from.strftime('%b %d, %Y')} – {dt_to.strftime('%b %d, %Y')}"
 
     category_tree = _build_category_tree(g.active_umbrella_id) if g.active_umbrella_id else []
 
@@ -795,10 +809,9 @@ def expenses():
         "expenses.html",
         expenses=rows,
         total=total,
-        month=month,
-        month_label=month_label,
-        prev_month=prev_m,
-        next_month=next_m,
+        date_from=date_from,
+        date_to=date_to,
+        date_label=date_label,
         chart_labels=chart_labels,
         chart_values=chart_values,
         search=search,
@@ -1039,12 +1052,18 @@ def delete_expense(id):
 @umbrella_required
 def export_expenses():
     from database.db import get_db
-    month = request.args.get("month", "").strip()
-    if month:
+    now = datetime.now(PACIFIC)
+    date_from = request.args.get("date_from", "").strip()
+    date_to = request.args.get("date_to", "").strip()
+    for val, key in [(date_from, "date_from"), (date_to, "date_to")]:
         try:
-            datetime.strptime(month, "%Y-%m")
+            if val:
+                datetime.strptime(val, "%Y-%m-%d")
         except ValueError:
-            month = ""
+            if key == "date_from":
+                date_from = ""
+            else:
+                date_to = ""
 
     conn = get_db()
     is_power = g.user["role"] == "power"
@@ -1059,29 +1078,26 @@ def export_expenses():
         " LEFT JOIN categories pc ON pc.id = c.parent_id"
     )
 
-    if is_power:
-        if month:
-            rows = conn.execute(
-                _select + " WHERE strftime('%Y-%m', e.date) = ? ORDER BY e.date DESC",
-                (month,),
-            ).fetchall()
-        else:
-            rows = conn.execute(_select + " ORDER BY e.date DESC").fetchall()
+    if date_from and date_to:
+        date_clause = " AND e.date >= ? AND e.date <= ?"
+        date_params = [date_from, date_to]
     else:
-        if month:
-            rows = conn.execute(
-                _select + " WHERE e.user_id = ? AND e.umbrella_id = ?"
-                " AND strftime('%Y-%m', e.date) = ? ORDER BY e.date DESC",
-                (session["user_id"], g.active_umbrella_id, month),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                _select + " WHERE e.user_id = ? AND e.umbrella_id = ? ORDER BY e.date DESC",
-                (session["user_id"], g.active_umbrella_id),
-            ).fetchall()
+        date_clause = ""
+        date_params = []
+
+    if is_power:
+        rows = conn.execute(
+            _select + " WHERE 1=1" + date_clause + " ORDER BY e.date DESC",
+            date_params,
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            _select + " WHERE e.user_id = ? AND e.umbrella_id = ?" + date_clause + " ORDER BY e.date DESC",
+            [session["user_id"], g.active_umbrella_id] + date_params,
+        ).fetchall()
     conn.close()
 
-    filename = f"expenses_{month}.csv" if month else "expenses_all.csv"
+    filename = f"expenses_{date_from}_to_{date_to}.csv" if (date_from and date_to) else "expenses_all.csv"
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["Date", "Description", "Category", "Amount", "Source", "Umbrella"])
