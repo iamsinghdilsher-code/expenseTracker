@@ -14,7 +14,8 @@
       "Bash(python -m pytest tests/ -x --tb=short -q)",
       "Bash(python -m pytest tests/ --tb=line -q)",
       "Bash(python -m pytest tests/ --tb=short -q)",
-      "Bash(graphify update *)"
+      "Bash(graphify update *)",
+      "Bash(python app.py)"
     ]
   }
 }

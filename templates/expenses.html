@@ -48,11 +48,18 @@
             </div>
         </div>
 
+        <!-- Quick date presets -->
+        <div class="filter-presets">
+            <button type="button" class="preset-btn" data-preset="this-month">This month</button>
+            <button type="button" class="preset-btn" data-preset="last-3-months">Last 3 months</button>
+            <button type="button" class="preset-btn" data-preset="year-to-date">Year to date</button>
+        </div>
+
         <!-- Search / filter bar -->
-        <form class="filter-bar" method="GET" action="{{ url_for('expenses') }}">
-            <input class="filter-date" type="date" name="date_from" value="{{ date_from }}">
+        <form id="filter-bar" class="filter-bar" method="GET" action="{{ url_for('expenses') }}">
+            <input class="filter-date" type="date" id="input-date-from" name="date_from" value="{{ date_from }}">
             <span class="filter-date-sep">to</span>
-            <input class="filter-date" type="date" name="date_to" value="{{ date_to }}">
+            <input class="filter-date" type="date" id="input-date-to" name="date_to" value="{{ date_to }}">
             <input class="filter-search" type="text" name="search"
                    placeholder="Search description…" value="{{ search }}">
             <select class="filter-cat" name="category">
@@ -155,6 +162,91 @@
 {% endblock %}
 
 {% block scripts %}
+<script>
+(function () {
+    const STORE_FROM = 'spendly_date_from';
+    const STORE_TO   = 'spendly_date_to';
+
+    function isoToday() {
+        const d = new Date();
+        return [d.getFullYear(), String(d.getMonth()+1).padStart(2,'0'), String(d.getDate()).padStart(2,'0')].join('-');
+    }
+
+    function presetDates(preset) {
+        const today = new Date();
+        const to = isoToday();
+        let from;
+        if (preset === 'this-month') {
+            from = [today.getFullYear(), String(today.getMonth()+1).padStart(2,'0'), '01'].join('-');
+        } else if (preset === 'last-3-months') {
+            const d = new Date(today);
+            d.setMonth(d.getMonth() - 3);
+            from = [d.getFullYear(), String(d.getMonth()+1).padStart(2,'0'), String(d.getDate()).padStart(2,'0')].join('-');
+        } else if (preset === 'year-to-date') {
+            from = today.getFullYear() + '-01-01';
+        }
+        return { from, to };
+    }
+
+    function saveAndSubmit(from, to) {
+        if (from) localStorage.setItem(STORE_FROM, from);
+        if (to)   localStorage.setItem(STORE_TO,   to);
+        document.getElementById('input-date-from').value = from || '';
+        document.getElementById('input-date-to').value   = to   || '';
+        document.getElementById('filter-bar').submit();
+    }
+
+    function highlightActivePreset() {
+        const from = document.getElementById('input-date-from').value;
+        const to   = document.getElementById('input-date-to').value;
+        document.querySelectorAll('.preset-btn').forEach(btn => {
+            const p = presetDates(btn.dataset.preset);
+            btn.classList.toggle('preset-btn--active', p.from === from && p.to === to);
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        // Restore saved preference if URL has no explicit date params
+        const params = new URLSearchParams(window.location.search);
+        if (!params.has('date_from') && !params.has('date_to')) {
+            const savedFrom = localStorage.getItem(STORE_FROM);
+            const savedTo   = localStorage.getItem(STORE_TO) || isoToday();
+            if (savedFrom) {
+                params.set('date_from', savedFrom);
+                params.set('date_to', savedTo);
+                window.location.search = params.toString();
+                return;
+            }
+        } else {
+            // Save whatever the server rendered (user explicitly navigated with dates)
+            const f = params.get('date_from');
+            const t = params.get('date_to');
+            if (f) localStorage.setItem(STORE_FROM, f);
+            if (t) localStorage.setItem(STORE_TO,   t);
+        }
+
+        // Auto-submit when a date input changes
+        ['input-date-from', 'input-date-to'].forEach(id => {
+            document.getElementById(id).addEventListener('change', function () {
+                const from = document.getElementById('input-date-from').value;
+                const to   = document.getElementById('input-date-to').value || isoToday();
+                saveAndSubmit(from, to);
+            });
+        });
+
+        // Preset buttons
+        document.querySelectorAll('.preset-btn').forEach(btn => {
+            btn.addEventListener('click', function () {
+                const { from, to } = presetDates(this.dataset.preset);
+                saveAndSubmit(from, to);
+            });
+        });
+
+        highlightActivePreset();
+    });
+})();
+</script>
+
 {% if chart_labels %}
 <script>
 const ctx = document.getElementById('catChart').getContext('2d');

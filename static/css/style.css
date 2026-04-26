@@ -1035,6 +1035,36 @@ a { color: inherit; text-decoration: none; }
     text-align: center;
 }
 
+/* Quick date presets */
+.filter-presets {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.preset-btn {
+    padding: 0.3rem 0.85rem;
+    border: 1.5px solid var(--border-soft);
+    border-radius: 999px;
+    background: var(--paper);
+    color: var(--muted);
+    font-family: var(--sans);
+    font-size: 0.8rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.preset-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+.preset-btn--active {
+    border-color: var(--ink);
+    background: var(--ink);
+    color: var(--paper);
+}
+
 /* Filter bar */
 .filter-bar {
     display: flex;
