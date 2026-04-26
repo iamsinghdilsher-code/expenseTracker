@@ -239,6 +239,16 @@ def _normalize_date(raw):
         except ValueError:
             pass
         return f"{yr}-{m.group(1).zfill(2)}-{m.group(2).zfill(2)}"
+    # "Jan 31" or "Jan 31 2026" (Capital One / bank statement format)
+    m = re.match(r'^([A-Za-z]{3})\s+(\d{1,2})(?:\s+(\d{4}))?$', raw)
+    if m:
+        try:
+            month = datetime.strptime(m.group(1), "%b").month
+            day = int(m.group(2))
+            yr = int(m.group(3)) if m.group(3) else datetime.now(PACIFIC).year
+            return f"{yr}-{month:02d}-{day:02d}"
+        except ValueError:
+            pass
     return datetime.now(PACIFIC).strftime("%Y-%m-%d")
 
 
@@ -267,6 +277,8 @@ def _parse_csv_statement(content):
                 if amount <= 0:
                     continue
                 desc = row.get(desc_col, "").strip()[:80] if desc_col else ""
+                if re.search(r'minimum\s+(payment\s+)?due|minimum\s+payment\b', desc, re.IGNORECASE):
+                    continue
                 raw_card = row.get(card_col, "").strip() if card_col else ""
                 expenses.append({
                     "date": _normalize_date(row.get(date_col, "") if date_col else ""),
@@ -282,21 +294,42 @@ def _parse_csv_statement(content):
     return expenses[:50]
 
 
+_SKIP_DESC = re.compile(r'minimum\s+(payment\s+)?due|minimum\s+payment\b|^total\b', re.IGNORECASE)
+
 def _parse_text_statement(text):
     expenses = []
-    pattern = re.compile(
+
+    # Numeric date: "01/31 MERCHANT $12.34" or "1-31-2026 MERCHANT $12.34"
+    numeric_pat = re.compile(
         r'(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\s+(.+?)\s+\$?(\d+\.\d{2})',
         re.MULTILINE,
     )
-    for m in pattern.finditer(text):
-        desc = m.group(2).strip()[:80]
+    # Capital One / named-month: "Jan 31 Jan 31 MERCHANT CITYSTATE $12.34"
+    named_pat = re.compile(
+        r'^([A-Za-z]{3}\s+\d{1,2})\s+[A-Za-z]{3}\s+\d{1,2}\s+(.+?)\s+\$(\d+\.\d{2})\s*$',
+        re.MULTILINE,
+    )
+
+    def _add(date_raw, desc_raw, amount_raw):
+        desc = desc_raw.strip()[:80]
+        if _SKIP_DESC.search(desc):
+            return
         expenses.append({
-            "date": _normalize_date(m.group(1)),
+            "date": _normalize_date(date_raw),
             "description": desc,
-            "amount": m.group(3),
+            "amount": amount_raw,
             "category": _detect_category(desc),
             "last_four": _extract_last_four(desc),
         })
+
+    # Try named-month format first; if it produces results skip numeric to avoid double-counting
+    for m in named_pat.finditer(text):
+        _add(m.group(1), m.group(2), m.group(3))
+
+    if not expenses:
+        for m in numeric_pat.finditer(text):
+            _add(m.group(1), m.group(2), m.group(3))
+
     return expenses[:50]
 
 
@@ -393,10 +426,6 @@ def _parse_pdf_statement(file_bytes):
     text_parts = []
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         for page in pdf.pages:
-            for table in (page.extract_tables() or []):
-                for row in (table or []):
-                    if row:
-                        text_parts.append("  ".join(str(c or "").strip() for c in row))
             raw = page.extract_text()
             if raw:
                 text_parts.append(raw)

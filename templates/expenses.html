@@ -234,6 +234,25 @@
             });
         });
 
+        // Auto-submit on category / member dropdown change
+        document.querySelectorAll('.filter-cat').forEach(function(sel) {
+            sel.addEventListener('change', function() {
+                document.getElementById('filter-bar').submit();
+            });
+        });
+
+        // Auto-submit on search input with 500 ms debounce
+        var searchTimer;
+        var searchEl = document.querySelector('.filter-search');
+        if (searchEl) {
+            searchEl.addEventListener('input', function() {
+                clearTimeout(searchTimer);
+                searchTimer = setTimeout(function() {
+                    document.getElementById('filter-bar').submit();
+                }, 500);
+            });
+        }
+
         // Preset buttons
         document.querySelectorAll('.preset-btn').forEach(btn => {
             btn.addEventListener('click', function () {
@@ -249,37 +268,59 @@
 
 {% if chart_labels %}
 <script>
-const ctx = document.getElementById('catChart').getContext('2d');
-new Chart(ctx, {
-    type: 'doughnut',
-    data: {
-        labels: {{ chart_labels | tojson }},
-        datasets: [{
-            data: {{ chart_values | tojson }},
-            backgroundColor: [
-                '#1a472a','#c17f24','#5b7fa6','#8b5e83',
-                '#4a7c59','#d4944a','#6b9ab8','#a07090',
-            ],
-            borderWidth: 2,
-            borderColor: '#ffffff',
-        }]
-    },
-    options: {
-        responsive: true,
-        plugins: {
-            legend: {
-                position: 'right',
-                labels: { font: { family: 'DM Sans', size: 12 }, padding: 12 }
-            },
-            tooltip: {
-                callbacks: {
-                    label: ctx => ` $${ctx.parsed.toFixed(2)}`
-                }
-            }
+(function() {
+    const labels = {{ chart_labels | tojson }};
+    const values = {{ chart_values | tojson }};
+    const total  = values.reduce((a, b) => a + b, 0);
+    const ctx    = document.getElementById('catChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels,
+            datasets: [{
+                data: values,
+                backgroundColor: [
+                    '#1a472a','#c17f24','#5b7fa6','#8b5e83',
+                    '#4a7c59','#d4944a','#6b9ab8','#a07090',
+                ],
+                borderWidth: 2,
+                borderColor: '#ffffff',
+            }]
         },
-        cutout: '62%',
-    }
-});
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'right',
+                    labels: {
+                        font: { family: 'DM Sans', size: 12 },
+                        padding: 14,
+                        generateLabels: function(chart) {
+                            const ds = chart.data.datasets[0];
+                            return chart.data.labels.map((lbl, i) => ({
+                                text: `${lbl}  $${ds.data[i].toFixed(2)} (${total > 0 ? (ds.data[i]/total*100).toFixed(1) : 0}%)`,
+                                fillStyle: ds.backgroundColor[i],
+                                strokeStyle: '#fff',
+                                lineWidth: 2,
+                                index: i,
+                                hidden: false,
+                            }));
+                        }
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(ctx) {
+                            const pct = total > 0 ? (ctx.parsed / total * 100).toFixed(1) : '0.0';
+                            return `  $${ctx.parsed.toFixed(2)}  (${pct}%)`;
+                        }
+                    }
+                }
+            },
+            cutout: '62%',
+        }
+    });
+})();
 </script>
 {% endif %}
 {% endblock %}

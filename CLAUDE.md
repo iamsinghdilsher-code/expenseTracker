@@ -30,9 +30,9 @@ pytest -k "dedup or draft" -v
 graphify update .
 ```
 
-`pytest.ini` sets `testpaths = tests` and `pythonpath = .`. Tesseract OCR must be installed separately (Windows default path `C:\Program Files\Tesseract-OCR\tesseract.exe` is auto-detected). Set `ANTHROPIC_API_KEY` to enable LLM-based receipt parsing and batch categorization; the app falls back to regex if the key is absent. LLM paths are tested in fallback (regex) mode by default — tests unset `ANTHROPIC_API_KEY` via `monkeypatch`.
+`pytest.ini` sets `testpaths = tests` and `pythonpath = .`. Tesseract OCR must be installed separately (Windows default path `C:\Program Files\Tesseract-OCR\tesseract.exe` is auto-detected). `pdfplumber` must be installed (`pip install pdfplumber`) for PDF statement parsing — the route returns an empty list if it is missing. Set `ANTHROPIC_API_KEY` to enable LLM-based receipt parsing and batch categorization; the app falls back to regex if the key is absent. LLM paths are tested in fallback (regex) mode by default — tests unset `ANTHROPIC_API_KEY` via `monkeypatch`.
 
-## Current State (as of 2026-04-25, Phase 9 complete + test suite added)
+## Current State (as of 2026-04-26, Phase 9 complete + test suite added)
 
 Flask expense tracker ("Spendly") — Jinja2 templates, SQLite, no ORM. The app is fully multi-tenant with umbrella-scoped data, a Power User admin dashboard, and an LLM-assisted ingestion pipeline.
 
@@ -129,9 +129,30 @@ Column migrations run inside `init_db()` wrapped in individual try/except blocks
 | `test_bulk.py` | Bulk import, statement endpoint, draft/confirmed status from card matching |
 | `test_webhook.py` | Webhook auth, sender resolution, body/attachment parsing |
 
+### Statement parsing pipeline
+
+`_parse_pdf_statement()` uses pdfplumber raw-text extraction only (table extraction is intentionally skipped — Capital One-style PDFs embed the entire transaction block as a single table cell, which duplicates the raw text and doubles every result).
+
+`_parse_text_statement()` runs two regex passes in order:
+1. **Named-month pattern** (Capital One / Spark): `Jan 31 Jan 31 MERCHANT CITYSTATE $12.34` — matches `^Mon DD Mon DD desc $amount$`
+2. **Numeric-date pattern** (generic): `01/31 MERCHANT $12.34` — only used if the named-month pass produces zero results.
+
+`_normalize_date()` handles: `YYYY-MM-DD`, `MM/DD/YYYY`, `MM-DD-YYYY`, `MM/DD` (year inferred, rolls back if >45 days in the future), and `Mon DD` / `Mon DD YYYY` named-month format.
+
+`_SKIP_DESC` (module-level compiled regex) filters both parsers: rows whose description matches `minimum (payment )?due`, `minimum payment`, or starts with `total` are silently dropped before any expense dict is built.
+
+### Dashboard filter behaviour
+
+`templates/expenses.html` auto-submits `#filter-bar` without the Filter button in three cases:
+- Date inputs — on `change` event (fires when the native date picker closes)
+- Category / member dropdowns — on `change` event immediately
+- Search text — on `input` event with a 500 ms debounce
+
+The Filter button is retained as a visible affordance and as a fallback.
+
 ### Frontend
 
-All pages extend `templates/base.html`. `_macros.html` contains the `category_select` macro. Charts use Chart.js 4.4 loaded from CDN (doughnut on dashboard, bar + doughnut + line on admin). CSS design system in `static/css/style.css` — CSS variables, green `#1a472a` / orange `#c17f24` palette, DM Serif Display / DM Sans fonts.
+All pages extend `templates/base.html`. `_macros.html` contains the `category_select` macro. Charts use Chart.js 4.4 loaded from CDN (doughnut on dashboard, bar + doughnut + line on admin). The dashboard doughnut legend renders `Category  $amount (xx%)` per slice via a custom `generateLabels` function; the tooltip shows the same format. CSS design system in `static/css/style.css` — CSS variables, green `#1a472a` / orange `#c17f24` palette, DM Serif Display / DM Sans fonts.
 
 ### Key invariants
 
