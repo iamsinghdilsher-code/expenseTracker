@@ -506,40 +506,88 @@ def privacy():
 def register():
     if g.user:
         return redirect(url_for("expenses"))
+
+    # Carry invite token from URL into session on GET
+    invite_token = request.args.get("invite")
+    if invite_token:
+        session["pending_invite"] = invite_token
+
+    invite_pending = bool(session.get("pending_invite"))
+
     if request.method == "POST":
         name = request.form.get("name", "").strip()
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
         if not name or not email or not password:
-            return render_template("register.html", error="All fields are required.")
+            return render_template("register.html", error="All fields are required.", invite_pending=invite_pending)
         if len(password) < 8:
-            return render_template("register.html", error="Password must be at least 8 characters.")
+            return render_template("register.html", error="Password must be at least 8 characters.", invite_pending=invite_pending)
         from database.db import get_db, init_db, seed_db
         init_db()
         conn = get_db()
         if conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone():
             conn.close()
-            return render_template("register.html", error="An account with that email already exists.")
+            return render_template("register.html", error="An account with that email already exists.", invite_pending=invite_pending)
+
+        pending_token = session.get("pending_invite")
+        # Direct sign-up → family head (power); via invite → family member (normal)
+        role = "normal" if pending_token else "power"
+
         conn.execute(
-            "INSERT INTO users (name, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
-            (name, email, generate_password_hash(password), datetime.now(PACIFIC).isoformat()),
+            "INSERT INTO users (name, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
+            (name, email, generate_password_hash(password), role, datetime.now(PACIFIC).isoformat()),
         )
         conn.commit()
         user = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
         conn.close()
         session["user_id"] = user["id"]
-        seed_db(user["id"])
-        # Activate the Home umbrella created by seed_db
-        conn2 = get_db()
-        umb = conn2.execute(
-            "SELECT id FROM umbrellas WHERE owner_id = ? LIMIT 1", (user["id"],)
-        ).fetchone()
-        conn2.close()
-        if umb:
-            session["active_umbrella_id"] = umb["id"]
-        flash(f"Welcome to Spendly, {name}!", "success")
+
+        if pending_token:
+            session.pop("pending_invite", None)
+            conn2 = get_db()
+            link = conn2.execute(
+                "SELECT * FROM invite_links WHERE token = ? AND used_by IS NULL", (pending_token,)
+            ).fetchone()
+            if link:
+                try:
+                    conn2.execute(
+                        "INSERT INTO umbrella_access (user_id, umbrella_id, role, created_at)"
+                        " VALUES (?, ?, 'member', ?)",
+                        (user["id"], link["umbrella_id"], datetime.now(PACIFIC).isoformat()),
+                    )
+                except sqlite3.IntegrityError:
+                    pass
+                conn2.execute(
+                    "UPDATE invite_links SET used_by = ?, used_at = ? WHERE id = ?",
+                    (user["id"], datetime.now(PACIFIC).isoformat(), link["id"]),
+                )
+                conn2.commit()
+                umbrella = conn2.execute(
+                    "SELECT id, name FROM umbrellas WHERE id = ?", (link["umbrella_id"],)
+                ).fetchone()
+                conn2.close()
+                if umbrella:
+                    session["active_umbrella_id"] = umbrella["id"]
+                flash(f"Welcome to Spendly, {name}! You've joined the family.", "success")
+                _log_audit("invite_use", "invite", link["id"],
+                           f"Registered via invite to join '{umbrella['name'] if umbrella else '?'}'",
+                           umbrella_id=link["umbrella_id"])
+            else:
+                conn2.close()
+                flash(f"Welcome to Spendly, {name}!", "success")
+        else:
+            seed_db(user["id"])
+            conn2 = get_db()
+            umb = conn2.execute(
+                "SELECT id FROM umbrellas WHERE owner_id = ? LIMIT 1", (user["id"],)
+            ).fetchone()
+            conn2.close()
+            if umb:
+                session["active_umbrella_id"] = umb["id"]
+            flash(f"Welcome to Spendly, {name}!", "success")
+
         return redirect(url_for("expenses"))
-    return render_template("register.html")
+    return render_template("register.html", invite_pending=invite_pending)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -666,29 +714,62 @@ def expenses():
     conn = get_db()
     is_power = g.user["role"] == "power"
 
+    family_members = []
+    member_filter = None
     if is_power:
-        query = "SELECT * FROM expenses WHERE strftime('%Y-%m', date) = ?"
-        params = [month]
+        member_filter = request.args.get("member_id", "").strip()
+        family_members = conn.execute(
+            "SELECT DISTINCT u.id, u.name FROM users u"
+            " JOIN umbrella_access ua ON ua.user_id = u.id"
+            " WHERE ua.umbrella_id = ? ORDER BY u.name",
+            (g.active_umbrella_id,),
+        ).fetchall()
+
+    if is_power:
+        if member_filter:
+            query = (
+                "SELECT e.*, u.name as member_name FROM expenses e"
+                " JOIN users u ON u.id = e.user_id"
+                " WHERE e.umbrella_id = ? AND e.user_id = ? AND strftime('%Y-%m', e.date) = ?"
+            )
+            params = [g.active_umbrella_id, member_filter, month]
+        else:
+            query = (
+                "SELECT e.*, u.name as member_name FROM expenses e"
+                " JOIN users u ON u.id = e.user_id"
+                " WHERE e.umbrella_id = ? AND strftime('%Y-%m', e.date) = ?"
+            )
+            params = [g.active_umbrella_id, month]
     else:
-        query = "SELECT * FROM expenses WHERE user_id = ? AND umbrella_id = ? AND strftime('%Y-%m', date) = ?"
+        query = (
+            "SELECT e.*, NULL as member_name FROM expenses e"
+            " WHERE e.user_id = ? AND e.umbrella_id = ? AND strftime('%Y-%m', e.date) = ?"
+        )
         params = [session["user_id"], g.active_umbrella_id, month]
 
     if search:
-        query += " AND description LIKE ?"
+        query += " AND e.description LIKE ?"
         params.append(f"%{search}%")
     if cat_filter:
-        query += " AND category = ?"
+        query += " AND e.category = ?"
         params.append(cat_filter)
-    query += " ORDER BY date DESC"
+    query += " ORDER BY e.date DESC"
     rows = conn.execute(query, params).fetchall()
 
     # Category totals for the pie chart (always full month, no search/cat filter)
     if is_power:
-        cat_rows = conn.execute(
-            "SELECT category, SUM(amount) as total FROM expenses"
-            " WHERE strftime('%Y-%m', date) = ? GROUP BY category",
-            (month,),
-        ).fetchall()
+        if member_filter:
+            cat_rows = conn.execute(
+                "SELECT category, SUM(amount) as total FROM expenses"
+                " WHERE umbrella_id = ? AND user_id = ? AND strftime('%Y-%m', date) = ? GROUP BY category",
+                (g.active_umbrella_id, member_filter, month),
+            ).fetchall()
+        else:
+            cat_rows = conn.execute(
+                "SELECT category, SUM(amount) as total FROM expenses"
+                " WHERE umbrella_id = ? AND strftime('%Y-%m', date) = ? GROUP BY category",
+                (g.active_umbrella_id, month),
+            ).fetchall()
     else:
         cat_rows = conn.execute(
             "SELECT category, SUM(amount) as total FROM expenses"
@@ -723,6 +804,8 @@ def expenses():
         search=search,
         cat_filter=cat_filter,
         category_tree=category_tree,
+        family_members=family_members,
+        member_filter=member_filter,
     )
 
 
@@ -1411,7 +1494,7 @@ def admin_users():
     all_umbrellas = conn.execute("SELECT id, name FROM umbrellas ORDER BY name").fetchall()
 
     invite_links = conn.execute(
-        "SELECT il.id, il.token, il.created_at, il.used_at,"
+        "SELECT il.id, il.token, il.created_at, il.used_at, il.invited_email,"
         " umb.name as umbrella_name,"
         " creator.name as creator_name,"
         " claimer.name as claimer_name"
@@ -1419,7 +1502,9 @@ def admin_users():
         " JOIN umbrellas umb ON umb.id = il.umbrella_id"
         " JOIN users creator ON creator.id = il.created_by"
         " LEFT JOIN users claimer ON claimer.id = il.used_by"
-        " ORDER BY il.created_at DESC LIMIT 30"
+        " WHERE il.umbrella_id = ?"
+        " ORDER BY il.created_at DESC LIMIT 30",
+        (g.active_umbrella_id,),
     ).fetchall()
 
     conn.close()
@@ -1510,28 +1595,32 @@ def admin_revoke_umbrella(user_id, umbrella_id):
 @power_required
 def admin_create_invite():
     from database.db import get_db
-    umbrella_id = request.form.get("umbrella_id", "").strip()
-    if not umbrella_id.isdigit():
-        flash("Please select an umbrella.", "error")
+    invited_email = request.form.get("invited_email", "").strip().lower()
+    if not invited_email:
+        flash("Please enter the member's email address.", "error")
+        return redirect(url_for("admin_users"))
+    umbrella_id = g.active_umbrella_id
+    if not umbrella_id:
+        flash("No active family selected.", "error")
         return redirect(url_for("admin_users"))
     token = secrets.token_urlsafe(16)
     conn = get_db()
-    umbrella = conn.execute("SELECT id, name FROM umbrellas WHERE id = ?", (int(umbrella_id),)).fetchone()
+    umbrella = conn.execute("SELECT id, name FROM umbrellas WHERE id = ?", (umbrella_id,)).fetchone()
     if not umbrella:
         conn.close()
-        flash("Umbrella not found.", "error")
+        flash("Family not found.", "error")
         return redirect(url_for("admin_users"))
     conn.execute(
-        "INSERT INTO invite_links (token, umbrella_id, created_by, created_at)"
-        " VALUES (?, ?, ?, ?)",
-        (token, int(umbrella_id), session["user_id"], datetime.now(PACIFIC).isoformat()),
+        "INSERT INTO invite_links (token, umbrella_id, created_by, invited_email, created_at)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (token, umbrella_id, session["user_id"], invited_email, datetime.now(PACIFIC).isoformat()),
     )
     conn.commit()
     conn.close()
-    flash("Invite link created.", "success")
+    flash(f"Invite link created for {invited_email}.", "success")
     _log_audit("create", "invite", None,
-               f"Created invite link for '{umbrella['name']}'",
-               umbrella_id=int(umbrella_id))
+               f"Created invite for {invited_email} to join '{umbrella['name']}'",
+               umbrella_id=umbrella_id)
     return redirect(url_for("admin_users"))
 
 
@@ -1554,9 +1643,12 @@ def admin_delete_invite(id):
 
 
 @app.route("/invite/<token>")
-@login_required
 def use_invite(token):
     from database.db import get_db
+    if not session.get("user_id"):
+        session["pending_invite"] = token
+        flash("Create an account to join your family.", "info")
+        return redirect(url_for("register"))
     conn = get_db()
     link = conn.execute(
         "SELECT * FROM invite_links WHERE token = ? AND used_by IS NULL", (token,)

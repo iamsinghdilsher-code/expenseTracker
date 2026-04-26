@@ -17,37 +17,39 @@
             {% endfor %}
         {% endwith %}
 
-        <!-- Header -->
-        <div class="dash-header">
-            <div>
-                <h1 class="dash-title">Dashboard</h1>
-                <p class="dash-subtitle">Welcome back, {{ current_user['name'] }}.</p>
-            </div>
-            <a href="{{ url_for('add_expense') }}" class="btn-primary">+ Add Expense</a>
-        </div>
-
-        <!-- Umbrella switcher -->
-        {% if user_umbrellas|length > 1 %}
-        <div class="umbrella-bar">
-            {% for umb in user_umbrellas %}
-                {% if umb['id'] == active_umbrella_id %}
-                    <span class="umb-chip umb-chip-active">{{ umb['name'] }}</span>
-                {% else %}
-                    <a href="{{ url_for('switch_umbrella', umbrella_id=umb['id']) }}" class="umb-chip">{{ umb['name'] }}</a>
+        <!-- Premium Hero Banner -->
+        <div class="dash-hero">
+            <div class="dash-hero-left">
+                <div class="dash-hero-greeting">Welcome back</div>
+                <div class="dash-hero-name">{{ current_user['name'] }}</div>
+                {% if active_umbrella %}
+                <div class="dash-hero-umbrella">
+                    <span class="dash-hero-umb-dot"></span>
+                    {{ active_umbrella['name'] }}
+                </div>
                 {% endif %}
-            {% endfor %}
-        </div>
-        {% elif active_umbrella %}
-        <div class="umbrella-bar">
-            <span class="umb-chip umb-chip-active">{{ active_umbrella['name'] }}</span>
-        </div>
-        {% endif %}
-
-        <!-- Month nav -->
-        <div class="month-nav">
-            <a href="{{ url_for('expenses', month=prev_month) }}" class="month-arrow">&#8592;</a>
-            <span class="month-label">{{ month_label }}</span>
-            <a href="{{ url_for('expenses', month=next_month) }}" class="month-arrow">&#8594;</a>
+                {% if user_umbrellas|length > 1 %}
+                <div class="dash-hero-umb-switch">
+                    {% for umb in user_umbrellas %}
+                        {% if umb['id'] != active_umbrella_id %}
+                        <a href="{{ url_for('switch_umbrella', umbrella_id=umb['id']) }}" class="dash-hero-umb-link">&#8594; {{ umb['name'] }}</a>
+                        {% endif %}
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+            <div class="dash-hero-center">
+                <div class="dash-hero-nav">
+                    <a href="{{ url_for('expenses', month=prev_month) }}" class="dash-hero-arrow">&#8592;</a>
+                    <span class="dash-hero-month">{{ month_label }}</span>
+                    <a href="{{ url_for('expenses', month=next_month) }}" class="dash-hero-arrow">&#8594;</a>
+                </div>
+                <div class="dash-hero-total">${{ "%.2f"|format(total) }}</div>
+                <div class="dash-hero-count">{{ expenses|length }} transaction{{ 's' if expenses|length != 1 else '' }}</div>
+            </div>
+            <div class="dash-hero-right">
+                <a href="{{ url_for('add_expense') }}" class="btn-hero-add">+ Add Expense</a>
+            </div>
         </div>
 
         <!-- Search / filter bar -->
@@ -70,8 +72,16 @@
                     {% endif %}
                 {% endfor %}
             </select>
+            {% if family_members %}
+            <select class="filter-cat" name="member_id">
+                <option value="">All members</option>
+                {% for m in family_members %}
+                <option value="{{ m['id'] }}" {% if member_filter == m['id']|string %}selected{% endif %}>{{ m['name'] }}</option>
+                {% endfor %}
+            </select>
+            {% endif %}
             <button class="filter-btn" type="submit">Filter</button>
-            {% if search or cat_filter %}
+            {% if search or cat_filter or member_filter %}
             <a class="filter-clear" href="{{ url_for('expenses', month=month) }}">Clear</a>
             {% endif %}
         </form>
@@ -107,6 +117,7 @@
                             <th>Date</th>
                             <th>Description</th>
                             <th>Category</th>
+                            {% if family_members %}<th>Who</th>{% endif %}
                             <th>Source</th>
                             <th>Amount</th>
                             <th></th>
@@ -118,6 +129,7 @@
                             <td class="col-date">{{ e['date'] }}</td>
                             <td class="col-desc">{{ e['description'] or '—' }}</td>
                             <td><span class="cat-badge cat-{{ e['category']|lower }}">{{ e['category'] }}</span></td>
+                            {% if family_members %}<td class="col-source">{{ e['member_name'] or '—' }}</td>{% endif %}
                             <td class="col-source">{{ e['source'] }}</td>
                             <td class="col-amount">${{ "%.2f"|format(e['amount']) }}</td>
                             <td class="col-actions">

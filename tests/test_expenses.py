@@ -216,6 +216,10 @@ class TestEditExpense:
     def test_normal_user_cannot_edit_other_users_expense(self, client):
         from tests.conftest import register, login
         register(client, name="Alice", email="alice@test.com", password="password123")
+        conn = dbmod.get_db()
+        conn.execute("UPDATE users SET role='normal' WHERE email='alice@test.com'")
+        conn.commit()
+        conn.close()
         _add(client, description="Alice exclusive", date="2024-07-01")
         conn = dbmod.get_db()
         eid = conn.execute(
@@ -225,6 +229,10 @@ class TestEditExpense:
 
         client.get("/logout")
         register(client, name="Bob", email="bob@test.com", password="password123")
+        conn = dbmod.get_db()
+        conn.execute("UPDATE users SET role='normal' WHERE email='bob@test.com'")
+        conn.commit()
+        conn.close()
 
         rv = client.get(f"/expenses/{eid}/edit", follow_redirects=True)
         assert b"not found" in rv.data.lower()
@@ -248,6 +256,10 @@ class TestDeleteExpense:
     def test_delete_other_users_expense_ignored(self, client):
         from tests.conftest import register, login
         register(client, name="Alice", email="alice@test.com", password="password123")
+        conn = dbmod.get_db()
+        conn.execute("UPDATE users SET role='normal' WHERE email='alice@test.com'")
+        conn.commit()
+        conn.close()
         _add(client, description="Alice only", date="2024-07-01")
         conn = dbmod.get_db()
         eid = conn.execute(
@@ -257,6 +269,10 @@ class TestDeleteExpense:
 
         client.get("/logout")
         register(client, name="Bob", email="bob@test.com", password="password123")
+        conn = dbmod.get_db()
+        conn.execute("UPDATE users SET role='normal' WHERE email='bob@test.com'")
+        conn.commit()
+        conn.close()
 
         client.post(f"/expenses/{eid}/delete", follow_redirects=True)
         conn = dbmod.get_db()

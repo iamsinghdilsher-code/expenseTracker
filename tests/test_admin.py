@@ -211,6 +211,10 @@ class TestUserManagement:
     def test_toggle_normal_to_power(self, power_client):
         power_client.get("/logout")
         register(power_client, name="Bob", email="bob@test.com", password="password123")
+        conn = dbmod.get_db()
+        conn.execute("UPDATE users SET role='normal' WHERE email='bob@test.com'")
+        conn.commit()
+        conn.close()
         power_client.get("/logout")
         login(power_client, email="alice@test.com", password="password123")
 
@@ -316,7 +320,7 @@ class TestInviteLinks:
         umb = _get_umbrella_id(user["id"])
         rv = power_client.post(
             "/admin/invites/create",
-            data={"umbrella_id": str(umb)},
+            data={"invited_email": "invited@test.com"},
             follow_redirects=True,
         )
         assert rv.status_code == 200
@@ -330,7 +334,7 @@ class TestInviteLinks:
         umb = _get_umbrella_id(user["id"])
         power_client.post(
             "/admin/invites/create",
-            data={"umbrella_id": str(umb)},
+            data={"invited_email": "bob@test.com"},
             follow_redirects=True,
         )
         conn = dbmod.get_db()
@@ -360,7 +364,7 @@ class TestInviteLinks:
         umb = _get_umbrella_id(user["id"])
         power_client.post(
             "/admin/invites/create",
-            data={"umbrella_id": str(umb)},
+            data={"invited_email": "todelete@test.com"},
             follow_redirects=True,
         )
         conn = dbmod.get_db()

@@ -113,6 +113,7 @@ def init_db():
         "ALTER TABLE expenses ADD COLUMN confidence_score REAL NOT NULL DEFAULT 1.0",
         "ALTER TABLE expenses ADD COLUMN status TEXT NOT NULL DEFAULT 'confirmed'",
         "ALTER TABLE expenses ADD COLUMN dedup_hash TEXT",
+        "ALTER TABLE invite_links ADD COLUMN invited_email TEXT",
     ]
     for sql in _alter_columns:
         try:
@@ -193,59 +194,8 @@ def get_category_tree(conn, umbrella_id):
 
 
 def seed_db(user_id):
-    """Insert sample expenses for a newly registered user."""
-    from datetime import timedelta
-    today = datetime.now(PACIFIC).date()
-
-    def _d(days_ago):
-        return (today - timedelta(days=days_ago)).isoformat()
-
-    samples = [
-        # Bills
-        (_d(74), "PG&E Electric Bill",     94.20,  "Bills"),
-        (_d(44), "AT&T Phone Bill",         65.00,  "Bills"),
-        (_d(14), "PG&E Electric Bill",      88.50,  "Bills"),
-        # Food
-        (_d(71), "Safeway Grocery",         87.43,  "Food"),
-        (_d(61), "Starbucks Coffee",         6.75,  "Food"),
-        (_d(34), "Trader Joe's",            54.10,  "Food"),
-        (_d(14), "Safeway Grocery",         92.30,  "Food"),
-        # Transport
-        (_d(68), "Shell Gas Station",       55.00,  "Transport"),
-        (_d(36), "Costco Gas #0673",        50.79,  "Transport"),
-        (_d(4),  "Costco Gas #0673",        48.20,  "Transport"),
-        # Shopping
-        (_d(50), "Amazon Purchase",         34.99,  "Shopping"),
-        (_d(32), "Target",                 120.45,  "Shopping"),
-        # Entertainment
-        (_d(79), "Netflix",                 15.99,  "Entertainment"),
-        (_d(49), "Netflix",                 15.99,  "Entertainment"),
-        (_d(19), "Netflix",                 15.99,  "Entertainment"),
-        # Health
-        (_d(69), "CVS Pharmacy",            22.50,  "Health"),
-        (_d(10), "Doctor Visit Copay",      30.00,  "Health"),
-    ]
-
+    """Set up default umbrella and categories for a newly registered user."""
     conn = get_db()
     now_iso = datetime.now(PACIFIC).isoformat()
-
-    umbrella_id = _create_home_umbrella(conn, user_id, now_iso)
-
-    cats = conn.execute(
-        "SELECT id, name FROM categories WHERE umbrella_id = ?", (umbrella_id,)
-    ).fetchall()
-    cat_ids = {row["name"]: row["id"] for row in cats}
-    other_id = cat_ids.get("Other")
-
-    conn.executemany(
-        "INSERT INTO expenses"
-        " (user_id, umbrella_id, category_id, amount, category, description, date,"
-        "  source, status, confidence_score, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, 'seed', 'confirmed', 1.0, ?)",
-        [
-            (user_id, umbrella_id, cat_ids.get(cat, other_id), amount, cat, desc, date, now_iso)
-            for date, desc, amount, cat in samples
-        ],
-    )
-    conn.commit()
+    _create_home_umbrella(conn, user_id, now_iso)
     conn.close()

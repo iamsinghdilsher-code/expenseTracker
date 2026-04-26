@@ -8,8 +8,13 @@
     <div class="auth-container">
 
         <div class="auth-header">
+            {% if invite_pending %}
+            <h1 class="auth-title">Join your family</h1>
+            <p class="auth-subtitle">You've been invited — create an account to continue</p>
+            {% else %}
             <h1 class="auth-title">Create your account</h1>
-            <p class="auth-subtitle">Start tracking your expenses today</p>
+            <p class="auth-subtitle">Start tracking your family's expenses today</p>
+            {% endif %}
         </div>
 
         <div class="auth-card">

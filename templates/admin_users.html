@@ -46,7 +46,9 @@
                             <td class="col-desc">{{ user['name'] or '—' }}</td>
                             <td style="font-size:0.85rem;color:var(--ink-muted)">{{ user['email'] }}</td>
                             <td>
-                                <span class="role-badge role-{{ user['role'] }}">{{ user['role'] }}</span>
+                                <span class="role-badge role-{{ user['role'] }}">
+                                    {% if user['role'] == 'power' %}Family Head{% else %}Member{% endif %}
+                                </span>
                             </td>
                             <td>
                                 {% for m in item.memberships %}
@@ -87,10 +89,10 @@
                                 <form method="POST"
                                       action="{{ url_for('admin_set_user_role', id=user['id']) }}"
                                       style="display:inline"
-                                      onsubmit="return confirm('Toggle role for {{ user['name'] or user['email'] }}?')">
+                                      onsubmit="return confirm('Change role for {{ user['name'] or user['email'] }}?')">
                                     <button type="submit"
                                             class="action-link {% if user['role'] == 'power' %}action-delete{% else %}action-edit{% endif %}">
-                                        {% if user['role'] == 'power' %}Demote{% else %}Promote{% endif %}
+                                        {% if user['role'] == 'power' %}Make Member{% else %}Make Family Head{% endif %}
                                     </button>
                                 </form>
                                 {% else %}
@@ -109,25 +111,21 @@
             {% endif %}
         </div>
 
-        <!-- Invite links -->
+        <!-- Invite member -->
         <div class="dash-card" style="padding:1.75rem;margin-bottom:1.5rem">
-            <p class="profile-section-title">Create Invite Link</p>
+            <p class="profile-section-title">Invite a Family Member</p>
             <p style="font-size:0.875rem;color:var(--ink-muted);margin-bottom:1rem">
-                Generate a single-use link that adds anyone who visits it to an umbrella.
+                Enter their email, generate a link, and share it with them.
+                They'll be added to <strong>{{ active_umbrella['name'] if active_umbrella else 'your family' }}</strong> when they sign up.
             </p>
             <form method="POST" action="{{ url_for('admin_create_invite') }}"
                   style="display:flex;gap:0.75rem;align-items:flex-end;flex-wrap:wrap">
                 <div class="form-group" style="margin-bottom:0">
-                    <label class="form-group label">Umbrella</label>
-                    <select name="umbrella_id" class="form-input form-select"
-                            style="min-width:180px" required>
-                        <option value="">Select umbrella…</option>
-                        {% for umb in all_umbrellas %}
-                        <option value="{{ umb['id'] }}">{{ umb['name'] }}</option>
-                        {% endfor %}
-                    </select>
+                    <label class="form-group label">Member's email</label>
+                    <input type="email" name="invited_email" class="form-input"
+                           placeholder="family@example.com" style="min-width:240px" required>
                 </div>
-                <button type="submit" class="btn-primary">Generate Link</button>
+                <button type="submit" class="btn-primary">Generate Invite Link</button>
             </form>
         </div>
 
@@ -141,8 +139,7 @@
                 <table class="expense-table">
                     <thead>
                         <tr>
-                            <th>Umbrella</th>
-                            <th>Created by</th>
+                            <th>Invited email</th>
                             <th>Created</th>
                             <th>Status</th>
                             <th>Link</th>
@@ -152,8 +149,7 @@
                     <tbody>
                         {% for link in invite_links %}
                         <tr>
-                            <td class="col-source">{{ link['umbrella_name'] }}</td>
-                            <td style="font-size:0.85rem">{{ link['creator_name'] }}</td>
+                            <td class="col-desc">{{ link['invited_email'] or '—' }}</td>
                             <td style="font-size:0.82rem;color:var(--ink-muted)">
                                 {{ link['created_at'][:10] }}
                             </td>

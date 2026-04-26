@@ -44,6 +44,11 @@ def login(client, email="alice@test.com", password="password123"):
 def auth_client(client):
     """Client with a normal user (alice@test.com) already registered and logged in."""
     register(client)
+    # Direct sign-up now creates a family head (power); reset to normal for test isolation.
+    conn = dbmod.get_db()
+    conn.execute("UPDATE users SET role = 'normal' WHERE email = 'alice@test.com'")
+    conn.commit()
+    conn.close()
     return client
 
 
